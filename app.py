@@ -1,9 +1,13 @@
+# ai/app.py
 import os
 import json
+import time
 from flask import Flask, request, jsonify
-import google.generativeai as genai
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError
 from dotenv import load_dotenv
-from sklearn.linear_model import LinearRegression
+from sklearn.ensemble import RandomForestRegressor
 import numpy as np
 
 # Load environment variables
@@ -11,44 +15,83 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Configure Gemini API
+# Configure Gemini Client using the modern google-genai library
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+client = None
 if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+    except Exception as e:
+        print(f"Error initializing GenAI Client: {e}")
 else:
     print("⚠️ Warning: GEMINI_API_KEY is not set in environment variables.")
 
 # ----------------- SCIKIT-LEARN PRICING MODEL -----------------
-# Simple regression model trained on historical AV logistics quotes
-X_train = np.array([
-    [100, 50], [200, 100], [300, 150], [500, 250], [1000, 500],
-    [150, 75], [250, 120], [400, 200], [800, 400], [1200, 600]
-])
-y_train = np.array([
-    1200, 2200, 3100, 4900, 9500,
-    1600, 2600, 4100, 7800, 11500
-])
+def generate_sri_lankan_synthetic_data(num_samples=250):
+    """
+    Generates a realistic synthetic dataset representing historical Sri Lankan AV rental quotes.
+    Features: [crowd_count, venue_size_sqm]
+    """
+    np.random.seed(42)
+    # Generate crowd sizes from tiny university seminars (20 people) to massive concerts (2000 people)
+    crowds = np.random.randint(20, 2000, size=num_samples)
+    # Generate venue sizes: roughly proportional to crowd size (0.5 to 1.5 sqm per person)
+    venue_sizes = crowds * np.random.uniform(0.5, 1.5, size=num_samples)
+    venue_sizes = np.clip(venue_sizes, 10, 1500).astype(int)
+    
+    prices = []
+    for crowd, size in zip(crowds, venue_sizes):
+        # Base setup + logistics handling (min price)
+        base = 8000
+        base += crowd * 70  # cost scaling per person
+        base += size * 120  # cost scaling per venue size
+        
+        # Step-wise gear additions (non-linear scaling)
+        if crowd > 1000:
+            base += 450000   # Large concert line arrays, rigging, heavy power
+        elif crowd > 500:
+            base += 180000   # Double subwoofers, trussing, moving heads
+        elif crowd > 150:
+            base += 50000    # Mid-range audio, monitors, basic lighting
+        elif crowd > 50:
+            base += 15000    # Extra mics, ambient lighting
+            
+        # Add random noise to simulate market variance / client negotiation (+/- 12%)
+        noise = np.random.uniform(-0.12, 0.12) * base
+        
+        # Ensure minimum LKR budget floor starts at LKR 10,000 (university friendly)
+        price = max(10000.0, round(base + noise, -3))
+        prices.append(price)
+        
+    X = np.column_stack((crowds, venue_sizes))
+    y = np.array(prices)
+    return X, y
 
-pricing_model = LinearRegression()
+# Generate data and train a Random Forest Regressor (great for stepwise non-linear pricing)
+print("⚙️ Generating historical Sri Lankan AV rental dataset...")
+X_train, y_train = generate_sri_lankan_synthetic_data(250)
+print(f"📊 Training Random Forest model on {len(X_train)} quotes...")
+pricing_model = RandomForestRegressor(n_estimators=100, random_state=42)
 pricing_model.fit(X_train, y_train)
+print("✅ Random Forest pricing model trained and online.")
 
 def predict_fair_price(crowd_count: int, venue_size_sqm: int) -> float:
-    """Predicts a baseline fair market price using Scikit-Learn."""
+    """Predicts a baseline fair market price in Sri Lankan Rupees (LKR)."""
     try:
         prediction = pricing_model.predict([[crowd_count, venue_size_sqm]])
-        return float(max(500.0, round(prediction[0], 2)))
+        # Set absolute lowest baseline LKR budget floor to LKR 10,000
+        return float(max(10000.0, round(prediction[0], 2)))
     except Exception as e:
         print(f"Pricing Model Error: {e}")
-        return 1500.0
+        return 120000.0  # Fallback LKR
 
 # ----------------- LOGISTICS POWER CALCULATOR (Deterministic Tool) -----------------
 def calculate_power_needs(audio_items_count: int, visual_items_count: int) -> dict:
     """
     Deterministic mathematical utility to compute power load safely (no LLM math errors).
     """
-    # Baseline power estimates per item type in Kilowatts
-    audio_draw_kw = audio_items_count * 0.8  # e.g., 800W per speaker/amp
-    visual_draw_kw = visual_items_count * 1.5 # e.g., high-power LED panels / moving heads
+    audio_draw_kw = audio_items_count * 0.8  
+    visual_draw_kw = visual_items_count * 1.5 
     
     total_draw = audio_draw_kw + visual_draw_kw
     suggested_generator = "25kVA Generator"
@@ -62,6 +105,30 @@ def calculate_power_needs(audio_items_count: int, visual_items_count: int) -> di
         "suggested_generator": suggested_generator
     }
 
+# ----------------- RETRY HELPER FOR TRANSIENT API ERRORS -----------------
+def generate_content_with_retry(model_name, contents, config=None, max_retries=4):
+    """
+    Helper to retry Gemini API calls in case of temporary overloads (503) or rate limits (429).
+    """
+    delay = 1.5
+    for attempt in range(max_retries):
+        try:
+            if config:
+                return client.models.generate_content(model=model_name, contents=contents, config=config)
+            else:
+                return client.models.generate_content(model=model_name, contents=contents)
+        except Exception as e:
+            # Check if it's a transient server busy (503) or rate limit (429) error
+            err_str = str(e).upper()
+            is_transient = "503" in err_str or "429" in err_str or "UNAVAILABLE" in err_str or "EXHAUSTED" in err_str
+            
+            if is_transient and attempt < max_retries - 1:
+                print(f"⚠️ Gemini API returned transient error ({e}). Retrying in {delay}s... (Attempt {attempt+1}/{max_retries})")
+                time.sleep(delay)
+                delay *= 2  # Exponential backoff
+            else:
+                raise e
+
 # ----------------- MULTI-AGENT PIPELINE -----------------
 @app.route('/api/generate', methods=['POST'])
 def generate_infrastructure_plan():
@@ -73,6 +140,7 @@ def generate_infrastructure_plan():
     3. Power & Logistics Specialist Agent (Flash)
     4. Lead Coordinator Agent (Pro) + ML Pricing Tool + Power Calculator Tool
     """
+    global client
     data = request.get_json()
     if not data:
         return jsonify({"error": "No input data provided"}), 400
@@ -82,15 +150,12 @@ def generate_infrastructure_plan():
     venue_size_sqm = int(data.get("venue_size_sqm", 50))
     budget_range = data.get("budget_range", "Unknown")
 
-    if not GEMINI_API_KEY:
-        return jsonify({"error": "Gemini API key is not configured on AI service."}), 500
-
-    # Instantiate Gemini models (Flash for workers, Pro for coordinator/reasoning)
-    try:
-        model_flash = genai.GenerativeModel("gemini-1.5-flash")
-        model_pro = genai.GenerativeModel("gemini-1.5-pro")
-    except Exception as e:
-        return jsonify({"error": f"Failed to load models: {str(e)}"}), 500
+    if not client:
+        GEMINI_API_KEY_RETRY = os.getenv("GEMINI_API_KEY")
+        if GEMINI_API_KEY_RETRY:
+            client = genai.Client(api_key=GEMINI_API_KEY_RETRY)
+        else:
+            return jsonify({"error": "Gemini Client is not configured. Key missing."}), 500
 
     try:
         # === AGENT 1: Audio Specialist Agent (Flash) ===
@@ -105,7 +170,11 @@ def generate_infrastructure_plan():
         Recommend specific audio hardware (speakers, subwoofers, mixers, microphones) including exact quantities.
         Provide a concise, professional list and explanation of the audio choices.
         """
-        audio_response = model_flash.generate_content(audio_prompt).text
+        audio_res = generate_content_with_retry(
+            model_name='gemini-3.5-flash',
+            contents=audio_prompt
+        )
+        audio_response = audio_res.text
         print("✅ [Agent 1] Completed audio recommendation.")
 
         # === AGENT 2: Visual & Lighting Specialist Agent (Flash) ===
@@ -120,11 +189,14 @@ def generate_infrastructure_plan():
         Recommend visual displays (LED walls, projectors) and lighting equipment (LED Pars, moving heads, lasers) with exact quantities.
         Provide a concise, professional list.
         """
-        visual_response = model_flash.generate_content(visual_prompt).text
+        visual_res = generate_content_with_retry(
+            model_name='gemini-3.5-flash',
+            contents=visual_prompt
+        )
+        visual_response = visual_res.text
         print("✅ [Agent 2] Completed visual recommendation.")
 
         # === DETERMINISTIC POWER CALCULATOR TOOL ===
-        # Count items from text to feed the calculator (approximate heuristic)
         audio_items_est = audio_response.count("\n") + 5
         visual_items_est = visual_response.count("\n") + 5
         power_calc = calculate_power_needs(audio_items_est, visual_items_est)
@@ -147,14 +219,18 @@ def generate_infrastructure_plan():
 
         Formulate a staging, cabling, and power distribution plan. Reconfirm if the suggested generator is correct or if a backup generator is needed.
         """
-        logistics_response = model_flash.generate_content(logistics_prompt).text
+        logistics_res = generate_content_with_retry(
+            model_name='gemini-3.5-flash',
+            contents=logistics_prompt
+        )
+        logistics_response = logistics_res.text
         print("✅ [Agent 3] Completed logistics recommendation.")
 
-        # === TOOL: Query Scikit-Learn Model ===
+        # === TOOL: Query Scikit-Learn Random Forest Model ===
         predicted_cost = predict_fair_price(crowd_count, venue_size_sqm)
 
         # === AGENT 4: Lead Coordinator Agent (Pro) ===
-        print(f"[Agent 4: Lead Coordinator] Consolidating plan to match budget {budget_range}...")
+        print(f"[Agent 4: Lead Coordinator] Consolidating plan to match budget LKR {budget_range}...")
         coordinator_prompt = f"""
         You are the Lead Coordinator Agent (AV Technical Director) for SoundScout AI.
         
@@ -164,32 +240,33 @@ def generate_infrastructure_plan():
         - Logistics Plan: {logistics_response}
         
         Constraints:
-        - User's Budget: {budget_range}
-        - ML Predicted Base Market Cost: ${predicted_cost:.2f}
+        - User's Budget: LKR {budget_range}
+        - ML Predicted Base Market Cost: LKR {predicted_cost:,.2f}
         
         Your Task:
         1. Consolidate these plans into a single coherent equipment list.
-        2. Adjust the quantities and models of equipment so that the plan realistically fits the user's budget range. If the budget is low, prioritize essential audio and basic lighting. If high, add premium subwoofers and larger screens.
+        2. Adjust the quantities and models of equipment so that the plan realistically fits the user's budget range in LKR. If the budget is low (e.g. around LKR 12,000 for university events), prioritize essential audio (like 2 standard speakers, 2 mics, basic mixer) and basic lighting. If high, add premium line arrays and LED walls.
         3. Output the result STRICTLY as a JSON array of strings under the key "equipment_plan". Do not output markdown, notes, or extra text.
 
         Example Output format:
         {{
             "equipment_plan": [
-                "2x Line Array Speakers (High Quality)",
-                "1x 16-Channel Mixer",
-                "4x Stage Monitor Wedges",
-                "1x 50kVA Generator (Power)"
+                "2x PA Speakers (Standard)",
+                "1x 6-Channel Mixer",
+                "2x Wired Handheld Microphones"
             ]
         }}
         """
         
-        # We use Pro here for high-level synthesis, budget matching, and JSON structure adherence
-        coordinator_response = model_pro.generate_content(
-            coordinator_prompt,
-            generation_config={"response_mime_type": "application/json"}
+        coordinator_res = generate_content_with_retry(
+            model_name='gemini-3.5-flash',
+            contents=coordinator_prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
         )
         
-        result_json = json.loads(coordinator_response.text)
+        result_json = json.loads(coordinator_res.text)
         
         # Add metadata for demonstration / auditing
         result_json["ml_predicted_cost"] = predicted_cost
