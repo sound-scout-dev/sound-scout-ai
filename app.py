@@ -271,8 +271,12 @@ def generate_infrastructure_plan():
         4. You MUST heavily customize the equipment models and brands based on the "User's Custom Event Description". For example:
            - If they request "premium sounds", "high quality audio", "vip staging", or similar high-end terms: place top-tier professional brands (e.g., L-Acoustics speakers, Shure Axient wireless, Allen & Heath SQ series digital mixers) in BOTH plans, but adjust quantities to fit the respective tiers.
            - If they request "simple system", "low budget", "within my budget", or similar low-end terms: scale down BOTH plans to standard, highly affordable models (e.g., Mackie Thump active speakers, Behringer analog mixers, wired mics).
-        5. If a category (e.g. "Lighting" or "Staging") is not in the User's Requested Categories, do NOT include any equipment for that category in either of the plans.
-        6. Output the result STRICTLY as a JSON object with two keys: "budget_plan" and "premium_plan". Each key must contain an array of strings representing the equipment. Do not output markdown, notes, or extra text.
+        5. Compare the User's Target Budget Max (from Target Budget LKR {budget_range}) to the complexity of the event (Crowd size: {crowd_count}, Categories: {requirements}) and the ML Predicted Base Market Cost (LKR {predicted_cost:,.2f}).
+           - If the user's budget range is not feasible to fulfill the basic requirements adequately (e.g., budget max of Rs. 20,000 for a crowd of 200+ with audio/lighting): set "feasibility_warning" to a helpful warning explaining why the budget is too low for this scope.
+           - If a warning is generated, also provide "price_cutting_tips" (an array of strings showing places they can compromise to achieve the Minimum Viable Product (MVP) within or near their budget, e.g., "Use standard active PA speakers instead of passive line-arrays", "Reduce the staging size", "Skip lighting and rely on the house lights").
+           - If the budget is fully feasible and safe, set "feasibility_warning" to null and "price_cutting_tips" to null.
+        6. If a category (e.g. "Lighting" or "Staging") is not in the User's Requested Categories, do NOT include any equipment for that category in either of the plans.
+        7. Output the result STRICTLY as a JSON object with four keys: "budget_plan", "premium_plan", "feasibility_warning", and "price_cutting_tips". Each key must contain either an array of strings representing the equipment, a string warning, or null. Do not output markdown, notes, or extra text.
 
         Example Output format:
         {{
@@ -286,6 +290,12 @@ def generate_infrastructure_plan():
                 "2x Subwoofers",
                 "1x 16-Channel Digital Mixer",
                 "4x Wireless Shure Microphones"
+            ],
+            "feasibility_warning": "Your budget of LKR 20,000 is low for a crowd of 200 with both audio and lighting. Standard rentals usually start around LKR 50,000.",
+            "price_cutting_tips": [
+                "Opt for 2 simple PA speakers instead of adding subwoofers",
+                "Reduce lighting fixtures to basic static LED Par Cans only",
+                "Consider dropping the staging requirement to save up to LKR 15,000"
             ]
         }}
         """
