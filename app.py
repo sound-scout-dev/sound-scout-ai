@@ -149,6 +149,9 @@ def generate_infrastructure_plan():
     crowd_count = int(data.get("crowd_count", 100))
     venue_size_sqm = int(data.get("venue_size_sqm", 50))
     budget_range = data.get("budget_range", "Unknown")
+    environment = data.get("environment", "Indoor")
+    requirements = data.get("requirements", ["Audio", "Lighting", "Staging"])
+    description = data.get("description", "")
 
     if not client:
         GEMINI_API_KEY_RETRY = os.getenv("GEMINI_API_KEY")
@@ -159,42 +162,54 @@ def generate_infrastructure_plan():
 
     try:
         # === AGENT 1: Audio Specialist Agent (Flash) ===
-        print(f"[Agent 1: Audio Specialist] Analyzing audio requirements for {crowd_count} people...")
-        audio_prompt = f"""
-        You are the SoundScout Audio Specialist Agent.
-        Analyze the audio requirements for this event:
-        - Event Type: {event_type}
-        - Crowd Count: {crowd_count} people
-        - Venue Size: {venue_size_sqm} sqm
-
-        Recommend specific audio hardware (speakers, subwoofers, mixers, microphones) including exact quantities.
-        Provide a concise, professional list and explanation of the audio choices.
-        """
-        audio_res = generate_content_with_retry(
-            model_name='gemini-3.5-flash',
-            contents=audio_prompt
-        )
-        audio_response = audio_res.text
-        print("✅ [Agent 1] Completed audio recommendation.")
+        audio_response = "Not requested by user."
+        if "Audio" in requirements:
+            print(f"[Agent 1: Audio Specialist] Analyzing audio requirements for {crowd_count} people in {environment}...")
+            audio_prompt = f"""
+            You are the SoundScout Audio Specialist Agent.
+            Analyze the audio requirements for this event:
+            - Event Type: {event_type}
+            - Crowd Count: {crowd_count} people
+            - Venue Size: {venue_size_sqm} sqm
+            - Environment: {environment}
+            - User Event Description: {description}
+            
+            Recommend specific audio hardware (speakers, subwoofers, mixers, microphones) including exact quantities.
+            Take into account whether it is Indoor or Outdoor (Outdoor requires more power and weather-proofing).
+            Make sure to tailor the recommendations to the event description provided.
+            Provide a concise, professional list and explanation of the audio choices.
+            """
+            audio_res = generate_content_with_retry(
+                model_name='gemini-3.1-flash-lite',
+                contents=audio_prompt
+            )
+            audio_response = audio_res.text
+            print("✅ [Agent 1] Completed audio recommendation.")
 
         # === AGENT 2: Visual & Lighting Specialist Agent (Flash) ===
-        print(f"[Agent 2: Visual Specialist] Analyzing lighting & screens for {venue_size_sqm} sqm...")
-        visual_prompt = f"""
-        You are the SoundScout Visual and Lighting Specialist Agent.
-        Analyze the lighting and display requirements for this event:
-        - Event Type: {event_type}
-        - Crowd Count: {crowd_count} people
-        - Venue Size: {venue_size_sqm} sqm
-
-        Recommend visual displays (LED walls, projectors) and lighting equipment (LED Pars, moving heads, lasers) with exact quantities.
-        Provide a concise, professional list.
-        """
-        visual_res = generate_content_with_retry(
-            model_name='gemini-3.5-flash',
-            contents=visual_prompt
-        )
-        visual_response = visual_res.text
-        print("✅ [Agent 2] Completed visual recommendation.")
+        visual_response = "Not requested by user."
+        if "Lighting" in requirements or "Visuals" in requirements:
+            print(f"[Agent 2: Visual Specialist] Analyzing lighting & screens for {venue_size_sqm} sqm {environment}...")
+            visual_prompt = f"""
+            You are the SoundScout Visual and Lighting Specialist Agent.
+            Analyze the lighting and display requirements for this event:
+            - Event Type: {event_type}
+            - Crowd Count: {crowd_count} people
+            - Venue Size: {venue_size_sqm} sqm
+            - Environment: {environment}
+            - User Event Description: {description}
+    
+            Recommend visual displays (LED walls, projectors) and lighting equipment (LED Pars, moving heads, lasers) with exact quantities.
+            Take into account whether it is Indoor or Outdoor (e.g. projectors might not work well outdoors during day).
+            Make sure to tailor the recommendations to the event description provided.
+            Provide a concise, professional list.
+            """
+            visual_res = generate_content_with_retry(
+                model_name='gemini-3.1-flash-lite',
+                contents=visual_prompt
+            )
+            visual_response = visual_res.text
+            print("✅ [Agent 2] Completed visual recommendation.")
 
         # === DETERMINISTIC POWER CALCULATOR TOOL ===
         audio_items_est = audio_response.count("\n") + 5
@@ -202,35 +217,38 @@ def generate_infrastructure_plan():
         power_calc = calculate_power_needs(audio_items_est, visual_items_est)
 
         # === AGENT 3: Power & Logistics Agent (Flash) ===
-        print(f"[Agent 3: Logistics Specialist] Calculating power load and staging...")
-        logistics_prompt = f"""
-        You are the SoundScout Power and Staging Logistics Agent.
-        Review the following equipment list recommendations:
-        
-        Audio Plan:
-        {audio_response}
-        
-        Visual Plan:
-        {visual_response}
-
-        Deterministic Calculations Provided:
-        - Estimated power draw: {power_calc['total_draw_kw']} kW
-        - Suggested Generator: {power_calc['suggested_generator']}
-
-        Formulate a staging, cabling, and power distribution plan. Reconfirm if the suggested generator is correct or if a backup generator is needed.
-        """
-        logistics_res = generate_content_with_retry(
-            model_name='gemini-3.5-flash',
-            contents=logistics_prompt
-        )
-        logistics_response = logistics_res.text
-        print("✅ [Agent 3] Completed logistics recommendation.")
+        logistics_response = "Not requested by user."
+        if "Staging" in requirements or "Power" in requirements or len(requirements) > 0:
+            print(f"[Agent 3: Logistics Specialist] Calculating power load and staging for {environment}...")
+            logistics_prompt = f"""
+            You are the SoundScout Power and Staging Logistics Agent.
+            Review the following equipment list recommendations for an {environment} event:
+            
+            Audio Plan:
+            {audio_response}
+            
+            Visual Plan:
+            {visual_response}
+    
+            Deterministic Calculations Provided:
+            - Estimated power draw: {power_calc['total_draw_kw']} kW
+            - Suggested Generator: {power_calc['suggested_generator']}
+            - User Event Description: {description}
+    
+            Formulate a staging, cabling, and power distribution plan. For outdoor events, emphasize weather protection (tents, cable ramps) and robust generators.
+            """
+            logistics_res = generate_content_with_retry(
+                model_name='gemini-3.1-flash-lite',
+                contents=logistics_prompt
+            )
+            logistics_response = logistics_res.text
+            print("✅ [Agent 3] Completed logistics recommendation.")
 
         # === TOOL: Query Scikit-Learn Random Forest Model ===
         predicted_cost = predict_fair_price(crowd_count, venue_size_sqm)
 
         # === AGENT 4: Lead Coordinator Agent (Pro) ===
-        print(f"[Agent 4: Lead Coordinator] Consolidating plan to match budget LKR {budget_range}...")
+        print(f"[Agent 4: Lead Coordinator] Consolidating plan into Budget and Premium options...")
         coordinator_prompt = f"""
         You are the Lead Coordinator Agent (AV Technical Director) for SoundScout AI.
         
@@ -240,26 +258,40 @@ def generate_infrastructure_plan():
         - Logistics Plan: {logistics_response}
         
         Constraints:
-        - User's Budget: LKR {budget_range}
+        - User's Requested Environment: {environment}
+        - User's Requested Categories: {requirements}
+        - User's Custom Event Description: {description}
+        - User's Target Budget: LKR {budget_range}
         - ML Predicted Base Market Cost: LKR {predicted_cost:,.2f}
         
         Your Task:
-        1. Consolidate these plans into a single coherent equipment list.
-        2. Adjust the quantities and models of equipment so that the plan realistically fits the user's budget range in LKR. If the budget is low (e.g. around LKR 12,000 for university events), prioritize essential audio (like 2 standard speakers, 2 mics, basic mixer) and basic lighting. If high, add premium line arrays and LED walls.
-        3. Output the result STRICTLY as a JSON array of strings under the key "equipment_plan". Do not output markdown, notes, or extra text.
+        1. Consolidate these plans into TWO distinct equipment lists: a "budget_plan" and a "premium_plan".
+        2. Adjust quantities and models so the "budget_plan" option stays as close to the Target Budget and ML Base Cost as possible.
+        3. The "premium_plan" option should feature higher-end gear (like Line Arrays instead of standard PA, LED walls instead of simple lighting, etc) for a higher price tier.
+        4. You MUST heavily customize the equipment models and brands based on the "User's Custom Event Description". For example:
+           - If they request "premium sounds", "high quality audio", "vip staging", or similar high-end terms: place top-tier professional brands (e.g., L-Acoustics speakers, Shure Axient wireless, Allen & Heath SQ series digital mixers) in BOTH plans, but adjust quantities to fit the respective tiers.
+           - If they request "simple system", "low budget", "within my budget", or similar low-end terms: scale down BOTH plans to standard, highly affordable models (e.g., Mackie Thump active speakers, Behringer analog mixers, wired mics).
+        5. If a category (e.g. "Lighting" or "Staging") is not in the User's Requested Categories, do NOT include any equipment for that category in either of the plans.
+        6. Output the result STRICTLY as a JSON object with two keys: "budget_plan" and "premium_plan". Each key must contain an array of strings representing the equipment. Do not output markdown, notes, or extra text.
 
         Example Output format:
         {{
-            "equipment_plan": [
+            "budget_plan": [
                 "2x PA Speakers (Standard)",
-                "1x 6-Channel Mixer",
+                "1x 6-Channel Analog Mixer",
                 "2x Wired Handheld Microphones"
+            ],
+            "premium_plan": [
+                "4x Line Array Speakers (Premium)",
+                "2x Subwoofers",
+                "1x 16-Channel Digital Mixer",
+                "4x Wireless Shure Microphones"
             ]
         }}
         """
         
         coordinator_res = generate_content_with_retry(
-            model_name='gemini-3.5-flash',
+            model_name='gemini-3.1-flash-lite',
             contents=coordinator_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
