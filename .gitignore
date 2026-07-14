@@ -1,4 +1,7 @@
 #ignore env files
 .env
-#ignore .venv
-/.venvRegarding
+.venv/
+venv/
+__pycache__/
+*.pyc
+.vscode/
