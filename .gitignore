@@ -1,4 +1,4 @@
 #ignore env files
 .env
 #ignore .venv
-/.venv
+/.venvRegarding
