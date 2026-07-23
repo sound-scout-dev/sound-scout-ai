@@ -1,0 +1,16 @@
+⚙️ Generating historical Sri Lankan AV rental dataset...
+📊 Training Random Forest model on 250 quotes...
+✅ Random Forest pricing model trained and online.
+⚙️ Training secondary Random Forest to estimate venue size from crowd count...
+✅ Secondary venue estimation model trained and online.
+ * Serving Flask app 'app'
+ * Debug mode: on
+WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:8000
+ * Running on http://10.10.24.144:8000
+Press CTRL+C to quit
+ * Restarting with stat
+ * Debugger is active!
+ * Debugger PIN: 120-942-447
+127.0.0.1 - - [23/Jul/2026 15:12:14] "POST /api/distance HTTP/1.1" 200 -

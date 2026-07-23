@@ -1,7 +1,15 @@
 # ai/app.py
 import os
+import sys
 import json
 import time
+
+# Windows' default console codepage (cp1252) can't encode the emoji used in
+# this file's print() calls, which crashes the process before Flask starts.
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 from flask import Flask, request, jsonify
 from google import genai
 from google.genai import types
