@@ -202,6 +202,7 @@ class GraphState(TypedDict):
     requirements: List[str]
     description: str
     location: str
+    venue_photo_analysis: Optional[dict]
     
     # Sub-agent recommendations text
     audio_recommendation: Optional[str]
@@ -238,6 +239,19 @@ def audio_node(state: GraphState) -> dict:
     if state.get("scaling_instruction"):
         scaling_prompt = f"\nCRITICAL BUDGET CONSTRAINT FOR SCALING DOWN: {state['scaling_instruction']}"
 
+    photo_analysis_prompt = ""
+    if state.get("venue_photo_analysis"):
+        analysis = state["venue_photo_analysis"]
+        insights = analysis.get("visual_insights", [])
+        insights_str = ", ".join(insights) if insights else "None"
+        photo_analysis_prompt = f"""
+    - Venue Spatial/Acoustic Analysis (from Uploaded Image):
+      * Reflective Surfaces (concrete/glass echo): {analysis.get('reflective_surfaces', False)}
+      * Low Ceiling (<4m): {analysis.get('low_ceiling', False)}
+      * Outdoor Audio Dissipation: {analysis.get('outdoor_dissipation', False)}
+      * Visual Insights & Warnings: {insights_str}
+        """
+
     prompt = f"""
     You are the SoundScout Audio Specialist Agent.
     Analyze the audio requirements for this event:
@@ -247,10 +261,12 @@ def audio_node(state: GraphState) -> dict:
     - Environment: {state['environment']}
     - Location/Venue: {state['location']}
     - User Event Description: {state['description']}
+    {photo_analysis_prompt}
     {scaling_prompt}
     
     Recommend specific audio hardware (speakers, subwoofers, mixers, microphones) including exact quantities.
     Take into account whether it is Indoor or Outdoor (Outdoor requires more power and weather-proofing).
+    Adjust speaker direction/quantity if Reflective Surfaces is True (e.g. recommend directional speakers or low-frequency limits to prevent concrete echo).
     Make sure to tailor the recommendations to the event description and any budget constraints.
     Provide a concise, professional list and explanation of the audio choices.
     """
@@ -274,6 +290,18 @@ def visual_node(state: GraphState) -> dict:
     if state.get("scaling_instruction"):
         scaling_prompt = f"\nCRITICAL BUDGET CONSTRAINT FOR SCALING DOWN: {state['scaling_instruction']}"
 
+    photo_analysis_prompt = ""
+    if state.get("venue_photo_analysis"):
+        analysis = state["venue_photo_analysis"]
+        insights = analysis.get("visual_insights", [])
+        insights_str = ", ".join(insights) if insights else "None"
+        photo_analysis_prompt = f"""
+    - Venue Spatial/Ambient Light Analysis (from Uploaded Image):
+      * High Ambient Light (washes out projectors): {analysis.get('high_ambient_light', False)}
+      * Low Ceiling (<4m limits tall rigging): {analysis.get('low_ceiling', False)}
+      * Visual Insights & Warnings: {insights_str}
+        """
+
     prompt = f"""
     You are the SoundScout Visual and Lighting Specialist Agent.
     Analyze the lighting and display requirements for this event:
@@ -283,10 +311,13 @@ def visual_node(state: GraphState) -> dict:
     - Environment: {state['environment']}
     - Location/Venue: {state['location']}
     - User Event Description: {state['description']}
+    {photo_analysis_prompt}
     {scaling_prompt}
     
     Recommend visual displays (LED walls, projectors) and lighting equipment (LED Pars, moving heads, lasers) with exact quantities.
-    Take into account whether it is Indoor or Outdoor (e.g. projectors might not work well outdoors during day).
+    Take into account whether it is Indoor or Outdoor.
+    If High Ambient Light is True, heavily prefer high-nit LED walls over projectors.
+    If Low Ceiling is True, avoid tall vertical trusses or massive fixtures, and specify compact ground-stacked or T-bar light options.
     Make sure to tailor the recommendations to the event description.
     Provide a concise, professional list.
     """
@@ -488,6 +519,7 @@ def generate_infrastructure_plan():
     requirements = data.get("requirements", ["Audio", "Lighting", "Staging"])
     description = data.get("description", "")
     location = data.get("location", "")
+    venue_photo_analysis = data.get("venue_photo_analysis", None)
 
     if not client:
         GEMINI_API_KEY_RETRY = os.getenv("GEMINI_API_KEY")
@@ -506,6 +538,7 @@ def generate_infrastructure_plan():
             "requirements": requirements,
             "description": description,
             "location": location,
+            "venue_photo_analysis": venue_photo_analysis,
             
             "audio_recommendation": None,
             "visual_recommendation": None,
@@ -576,6 +609,145 @@ def estimate_distance():
     except Exception as e:
         print(f"Error estimating distance: {e}")
         return jsonify({"distance_km": 25.0}), 200
+
+@app.route('/api/voice-intake', methods=['POST'])
+def process_voice_intake():
+    global client
+    if 'audio' not in request.files:
+        return jsonify({"error": "No audio file provided"}), 400
+        
+    audio_file = request.files['audio']
+    audio_bytes = audio_file.read()
+    
+    if not client:
+        GEMINI_API_KEY_RETRY = os.getenv("GEMINI_API_KEY")
+        if GEMINI_API_KEY_RETRY:
+            client = genai.Client(api_key=GEMINI_API_KEY_RETRY)
+        else:
+            return jsonify({"error": "Gemini Client is not configured. Key missing."}), 500
+
+    prompt = """
+    You are the SoundScout Voice Intake Agent.
+    Listen to this audio note carefully. The user is describing an event they want to plan.
+    It might be spoken in English, Sinhala, or a mix of both (Singlish/code-switched language).
+    
+    Your goal is to parse and extract the following parameters with extremely high accuracy:
+    1. eventName: A suitable name for the event (e.g. "Beach Music Fest", "Sakura"). Pay close attention to Sinhala words like "Sakura" (do not transcribe as "Sakura giri" unless they explicitly say "giri").
+    2. eventType: The type of the event. MUST be one of these exact values: "Music Festival", "Corporate Conference", "Wedding", "Private Party", "University Seminar", "Other".
+    3. crowdSize: The expected guest count (integer, e.g. 300).
+    4. venueSizeSqm: The venue size in square meters if mentioned, otherwise null.
+    5. budgetMin: The minimum budget in LKR (integer).
+    6. budgetMax: The maximum budget in LKR (integer).
+       - Note: If they say "Five Lakhs" or "Lakhs paha", that is 500,000 LKR. 
+       - If they say "One Lakh", that is 100,000 LKR.
+       - Do not confuse LKR 500,000 (five lakhs) with 105,000.
+    7. location: The event venue/location (string, e.g. "University of Moratuwa", "Waters Edge, Battaramulla").
+    8. environment: "Indoor" or "Outdoor" if specified, otherwise default to "Indoor".
+    9. requirements: A list of requested equipment categories. Must only contain values from: ["Audio", "Lighting", "Staging", "Visuals", "Power"].
+    10. description: A brief, professional description of the event (minimum 25 words) based on their voice input, summarising the theme, location, and requirements.
+
+    Respond STRICTLY with a JSON object containing a "parameters" key, whose value is the extracted parameters object.
+    
+    Example response shape:
+    {
+       "parameters": {
+          "eventName": "Sakura",
+          "eventType": "Music Festival",
+          "crowdSize": 500,
+          "venueSizeSqm": 400,
+          "budgetMin": 400000,
+          "budgetMax": 500000,
+          "location": "University of Moratuwa",
+          "environment": "Outdoor",
+          "requirements": ["Audio", "Lighting", "Visuals"],
+          "description": "An outdoor music festival named Sakura at the University of Moratuwa with an expected crowd of 500 people, requiring audio, lighting, and visuals reinforcement."
+       }
+    }
+    """
+    
+    try:
+        contents = [
+            types.Part.from_bytes(
+                data=audio_bytes,
+                mime_type="audio/webm"
+            ),
+            prompt
+        ]
+        
+        # Using gemini-3.5-flash for maximum audio comprehension and accuracy
+        res = generate_content_with_retry(
+            model_name='gemini-3.5-flash',
+            contents=contents,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        
+        result_json = json.loads(res.text)
+        return jsonify(result_json), 200
+    except Exception as e:
+        print(f"Error processing voice intake: {e}")
+        return jsonify({"error": f"Failed to analyze voice note: {str(e)}"}), 500
+
+@app.route('/api/venue-analysis', methods=['POST'])
+def analyze_venue():
+    global client
+    if 'image' not in request.files:
+        return jsonify({"error": "No image file provided"}), 400
+        
+    image_file = request.files['image']
+    image_bytes = image_file.read()
+    content_type = image_file.content_type or "image/jpeg"
+    
+    if not client:
+        GEMINI_API_KEY_RETRY = os.getenv("GEMINI_API_KEY")
+        if GEMINI_API_KEY_RETRY:
+            client = genai.Client(api_key=GEMINI_API_KEY_RETRY)
+        else:
+            return jsonify({"error": "Gemini Client is not configured. Key missing."}), 500
+
+    prompt = """
+    You are the SoundScout Venue Spatial & Acoustic Analysis Agent.
+    Analyze the uploaded photo of this event venue and extract spatial and acoustic characteristics.
+    
+    Look for:
+    1. Reflective surfaces (e.g. glass walls, concrete floors/walls, mirrors) which cause echoes.
+    2. Ceiling height (e.g. low ceiling limits high staging, high ceiling requires powerful wash lighting).
+    3. Ambient lighting (e.g. high ambient daylight / glass pavilions wash out projectors, dark halls don't).
+    4. Space environment (e.g. outdoor open field means sound dissipation, indoor tight room causes bass build-up).
+    
+    Your output must strictly be a JSON object with these keys:
+    - "reflective_surfaces": boolean (true if concrete/glass walls/mirrors are prominent)
+    - "high_ambient_light": boolean (true if highly lit by daylight or bright overheads)
+    - "low_ceiling": boolean (true if ceiling looks under 4 meters)
+    - "outdoor_dissipation": boolean (true if outdoor grass or open spaces)
+    - "visual_insights": list of strings (each a concise, human-readable warning or recommendation, e.g. "Hard concrete walls: add acoustic panels or space speakers", "High ambient daylight: use high-nit LED wall instead of projector").
+
+    Respond ONLY with the raw JSON object. Do not include markdown, backticks, or other text.
+    """
+    
+    try:
+        contents = [
+            types.Part.from_bytes(
+                data=image_bytes,
+                mime_type=content_type
+            ),
+            prompt
+        ]
+        
+        res = generate_content_with_retry(
+            model_name='gemini-3.5-flash',
+            contents=contents,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json"
+            )
+        )
+        
+        result_json = json.loads(res.text)
+        return jsonify(result_json), 200
+    except Exception as e:
+        print(f"Error analyzing venue image: {e}")
+        return jsonify({"error": f"Failed to analyze venue photo: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, debug=True)
