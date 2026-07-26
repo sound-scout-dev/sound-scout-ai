@@ -674,9 +674,9 @@ def process_voice_intake():
             prompt
         ]
         
-        # Using gemini-3.5-flash for maximum audio comprehension and accuracy
+        # Using gemini-3.1-flash-lite for maximum audio comprehension and accuracy
         res = generate_content_with_retry(
-            model_name='gemini-3.5-flash',
+            model_name='gemini-3.1-flash-lite',
             contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -736,7 +736,7 @@ def analyze_venue():
         ]
         
         res = generate_content_with_retry(
-            model_name='gemini-3.5-flash',
+            model_name='gemini-3.1-flash-lite',
             contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -748,6 +748,79 @@ def analyze_venue():
     except Exception as e:
         print(f"Error analyzing venue image: {e}")
         return jsonify({"error": f"Failed to analyze venue photo: {str(e)}"}), 500
+
+support_chats = {}
+
+@app.route('/api/support', methods=['POST'])
+def support_bot():
+    global client
+    data = request.get_json() or {}
+    session_id = data.get("session_id")
+    user_message = data.get("message")
+    
+    if not session_id or not user_message:
+        return jsonify({"error": "session_id and message are required"}), 400
+        
+    if not client:
+        GEMINI_API_KEY_RETRY = os.getenv("GEMINI_API_KEY")
+        if GEMINI_API_KEY_RETRY:
+            client = genai.Client(api_key=GEMINI_API_KEY_RETRY)
+        else:
+            return jsonify({"error": "Gemini Client is not configured. Key missing."}), 500
+            
+    system_instruction = """
+    You are the SoundScout AI Support Assistant, an official WhatsApp bot helping event organizers and AV equipment vendors.
+    SoundScout is a smart platform matching event organizers with audio, lighting, visuals, and staging vendors in Sri Lanka.
+    Organizers can plan events using native voice notes, upload venue photos for automatic acoustic analysis, receive optimized equipment recommendations, and accept bids from vendors.
+    Vendors can view open opportunities matching their categories and districts, submit bids, and register inventory.
+    
+    Be helpful, extremely professional, concise (since this is on WhatsApp, keep responses to maximum 3-4 bullet points or short paragraphs), and friendly.
+    If asked about system status, everything is fully operational.
+    """
+    
+    # Initialize history list if not present
+    if session_id not in support_chats:
+        support_chats[session_id] = []
+        
+    # Append the new user message to the session history
+    support_chats[session_id].append(
+        types.Content(role="user", parts=[types.Part.from_text(text=user_message)])
+    )
+    
+    # Keep history bounded to last 20 messages to avoid context overflow and memory bloat
+    if len(support_chats[session_id]) > 20:
+        support_chats[session_id] = support_chats[session_id][-20:]
+        
+    try:
+        # Generate model response incorporating system instruction and conversation history
+        res = client.models.generate_content(
+            model='gemini-3.1-flash-lite',
+            contents=support_chats[session_id],
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.7,
+                max_output_tokens=300
+            )
+        )
+        
+        print("--- SUPPORT BOT DEBUG ---")
+        print("Response:", res)
+        if res.candidates:
+            print("Finish Reason:", res.candidates[0].finish_reason)
+            print("Content:", res.candidates[0].content)
+        
+        reply_text = res.text.strip()
+        
+        # Append assistant reply to the history
+        support_chats[session_id].append(
+            types.Content(role="model", parts=[types.Part.from_text(text=reply_text)])
+        )
+        
+        return jsonify({"reply": reply_text}), 200
+        
+    except Exception as e:
+        print(f"Error in support agent: {e}")
+        return jsonify({"error": f"Support agent error: {str(e)}"}), 500
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, debug=True)
