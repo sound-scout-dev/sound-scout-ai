@@ -492,6 +492,10 @@ app_graph = workflow.compile()
 
 # ----------------- FLASK ENDPOINTS -----------------
 
+@app.route('/', methods=['GET'])
+def health_check():
+    return jsonify({"status": "SoundScout AI Service is running! 🚀"}), 200
+
 @app.route('/api/generate', methods=['POST'])
 def generate_infrastructure_plan():
     global client
