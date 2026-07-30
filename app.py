@@ -155,11 +155,17 @@ def call_groq_api(contents):
         if isinstance(contents, str):
             prompt_text = contents
         elif isinstance(contents, list):
+            extracted = []
             for item in contents:
                 if isinstance(item, str):
-                    prompt_text += item + "\n"
-                elif hasattr(item, 'text'):
-                    prompt_text += getattr(item, 'text', '') + "\n"
+                    extracted.append(item)
+                elif hasattr(item, 'parts') and item.parts:
+                    for part in item.parts:
+                        if hasattr(part, 'text') and part.text:
+                            extracted.append(part.text)
+                elif hasattr(item, 'text') and item.text:
+                    extracted.append(item.text)
+            prompt_text = "\n".join(extracted)
         
         headers = {
             "Authorization": f"Bearer {groq_key}",
