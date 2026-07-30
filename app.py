@@ -119,26 +119,41 @@ def calculate_power_needs(audio_items_count: int, visual_items_count: int) -> di
         "suggested_generator": suggested_generator
     }
 
-# ----------------- RETRY HELPER FOR TRANSIENT API ERRORS -----------------
-def generate_content_with_retry(model_name, contents, config=None, max_retries=6):
-    delay = 2.0
-    for attempt in range(max_retries):
-        try:
-            if config:
-                return client.models.generate_content(model=model_name, contents=contents, config=config)
-            else:
-                return client.models.generate_content(model=model_name, contents=contents)
-        except Exception as e:
-            err_str = str(e).upper()
-            is_transient = "503" in err_str or "429" in err_str or "UNAVAILABLE" in err_str or "EXHAUSTED" in err_str
-            
-            if is_transient and attempt < max_retries - 1:
-                sleep_time = 5.5 if "429" in err_str or "EXHAUSTED" in err_str else delay
-                print(f"⚠️ Gemini API returned transient error ({e}). Retrying in {sleep_time}s... (Attempt {attempt+1}/{max_retries})")
-                time.sleep(sleep_time)
-                delay *= 2
-            else:
-                raise e
+# ----------------- RETRY HELPER FOR TRANSIENT API ERRORS & MULTI-MODEL FALLBACK -----------------
+FALLBACK_MODELS = ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-2.0-flash-exp', 'gemini-1.5-pro']
+
+def generate_content_with_retry(model_name, contents, config=None, max_retries=3):
+    models_to_try = [model_name] + [m for m in FALLBACK_MODELS if m != model_name]
+    last_exception = None
+
+    for target_model in models_to_try:
+        delay = 1.5
+        for attempt in range(max_retries):
+            try:
+                if config:
+                    return client.models.generate_content(model=target_model, contents=contents, config=config)
+                else:
+                    return client.models.generate_content(model=target_model, contents=contents)
+            except Exception as e:
+                err_str = str(e).upper()
+                last_exception = e
+                is_quota = "429" in err_str or "EXHAUSTED" in err_str or "RESOURCE_EXHAUSTED" in err_str
+                is_transient = "503" in err_str or "UNAVAILABLE" in err_str
+                
+                if is_quota:
+                    print(f"⚠️ Model '{target_model}' quota exhausted ({e}). Trying fallback model...")
+                    break  # Try next model in fallback list immediately
+                elif is_transient and attempt < max_retries - 1:
+                    print(f"⚠️ Transient error on '{target_model}'. Retrying in {delay}s...")
+                    time.sleep(delay)
+                    delay *= 2
+                else:
+                    break
+
+    if last_exception:
+        raise last_exception
+    else:
+        raise Exception("All Gemini fallback models failed.")
 
 def resolve_district_with_ai(location):
     if not location or location.strip() == '':
@@ -181,7 +196,7 @@ def resolve_district_with_ai(location):
     """
     try:
         res = generate_content_with_retry(
-            model_name='gemini-3.1-flash-lite',
+            model_name='gemini-1.5-flash',
             contents=prompt
         )
         district = res.text.strip().replace("*", "").replace('"', '').replace("'", "")
@@ -271,7 +286,7 @@ def audio_node(state: GraphState) -> dict:
     Provide a concise, professional list and explanation of the audio choices.
     """
     res = generate_content_with_retry(
-        model_name='gemini-3.1-flash-lite',
+        model_name='gemini-1.5-flash',
         contents=prompt
     )
     return {"audio_recommendation": res.text}
@@ -322,7 +337,7 @@ def visual_node(state: GraphState) -> dict:
     Provide a concise, professional list.
     """
     res = generate_content_with_retry(
-        model_name='gemini-3.1-flash-lite',
+        model_name='gemini-1.5-flash',
         contents=prompt
     )
     return {"visual_recommendation": res.text}
@@ -362,7 +377,7 @@ def logistics_node(state: GraphState) -> dict:
     Formulate a staging, cabling, and power distribution plan. For outdoor events, emphasize weather protection (tents, cable ramps) and robust generators.
     """
     res = generate_content_with_retry(
-        model_name='gemini-3.1-flash-lite',
+        model_name='gemini-1.5-flash',
         contents=prompt
     )
     return {
@@ -411,7 +426,7 @@ def coordinator_node(state: GraphState) -> dict:
     8. Output the result STRICTLY as a JSON object with four keys: "budget_plan", "premium_plan", "feasibility_warning", and "price_cutting_tips". Do not output markdown, notes, or extra text.
     """
     res = generate_content_with_retry(
-        model_name='gemini-3.1-flash-lite',
+        model_name='gemini-1.5-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json"
@@ -606,7 +621,7 @@ def estimate_distance():
     Do not output any markdown, explanations, or units. Just a single float or integer.
     """
     try:
-        res = generate_content_with_retry('gemini-3.1-flash-lite', prompt)
+        res = generate_content_with_retry('gemini-1.5-flash', prompt)
         dist_str = res.text.strip().replace("km", "").replace("*", "").replace('"', '').replace("'", "")
         dist = float(dist_str)
         return jsonify({"distance_km": dist}), 200
@@ -678,9 +693,9 @@ def process_voice_intake():
             prompt
         ]
         
-        # Using gemini-3.1-flash-lite for maximum audio comprehension and accuracy
+        # Using gemini-1.5-flash for maximum audio comprehension and accuracy
         res = generate_content_with_retry(
-            model_name='gemini-3.1-flash-lite',
+            model_name='gemini-1.5-flash',
             contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -740,7 +755,7 @@ def analyze_venue():
         ]
         
         res = generate_content_with_retry(
-            model_name='gemini-3.1-flash-lite',
+            model_name='gemini-1.5-flash',
             contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -794,28 +809,30 @@ def support_bot():
     # Keep history bounded to last 20 messages to avoid context overflow and memory bloat
     if len(support_chats[session_id]) > 20:
         support_chats[session_id] = support_chats[session_id][-20:]
-        
+
     try:
-        # Generate model response incorporating system instruction and conversation history
-        res = client.models.generate_content(
-            model='gemini-2.0-flash-lite',
-            contents=support_chats[session_id],
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.7,
-                max_output_tokens=300
-            )
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=0.7,
+            max_output_tokens=300
         )
-        
+        # Use gemini-1.5-flash — separate quota pool from gemini-2.0-flash-lite
+        res = generate_content_with_retry(
+            model_name='gemini-1.5-flash',
+            contents=support_chats[session_id],
+            config=config
+        )
+
         reply_text = res.text.strip()
-        
+        print(f"Support bot replied to {session_id}: {reply_text[:80]}...")
+
         # Append assistant reply to the history
         support_chats[session_id].append(
             types.Content(role="model", parts=[types.Part.from_text(text=reply_text)])
         )
-        
+
         return jsonify({"reply": reply_text}), 200
-        
+
     except Exception as e:
         print(f"Error in support agent: {e}")
         return jsonify({"error": f"Support agent error: {str(e)}"}), 500
