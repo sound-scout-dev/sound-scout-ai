@@ -134,6 +134,27 @@ def calculate_power_needs(audio_items_count: int, visual_items_count: int) -> di
         "suggested_generator": suggested_generator
     }
 
+# ----------------- ROBUST JSON PARSER FOR LLM OUTPUTS -----------------
+def clean_and_parse_json(text_str):
+    raw = text_str.strip()
+    if "```" in raw:
+        parts = raw.split("```")
+        for part in parts:
+            part_str = part.strip()
+            if part_str.startswith("json"):
+                part_str = part_str[4:].strip()
+            if part_str.startswith("{") and part_str.endswith("}"):
+                try:
+                    return json.loads(part_str)
+                except Exception:
+                    pass
+    first_brace = raw.find("{")
+    last_brace = raw.rfind("}")
+    if first_brace != -1 and last_brace != -1:
+        json_substring = raw[first_brace:last_brace + 1]
+        return json.loads(json_substring)
+    return json.loads(raw)
+
 # ----------------- RETRY HELPER FOR TRANSIENT API ERRORS & ULTRA-LOW COST MODEL FALLBACK -----------------
 # Optimized for minimum token cost ($0.0375 - $0.075 per million tokens)
 FALLBACK_MODELS = ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b', 'gemini-2.0-flash']
@@ -155,11 +176,17 @@ def call_groq_api(contents):
         if isinstance(contents, str):
             prompt_text = contents
         elif isinstance(contents, list):
+            extracted = []
             for item in contents:
                 if isinstance(item, str):
-                    prompt_text += item + "\n"
-                elif hasattr(item, 'text'):
-                    prompt_text += getattr(item, 'text', '') + "\n"
+                    extracted.append(item)
+                elif hasattr(item, 'parts') and item.parts:
+                    for part in item.parts:
+                        if hasattr(part, 'text') and part.text:
+                            extracted.append(part.text)
+                elif hasattr(item, 'text') and item.text:
+                    extracted.append(item.text)
+            prompt_text = "\n".join(extracted)
         
         headers = {
             "Authorization": f"Bearer {groq_key}",
@@ -505,7 +532,7 @@ def coordinator_node(state: GraphState) -> dict:
             response_mime_type="application/json"
         )
     )
-    result = json.loads(res.text)
+    result = clean_and_parse_json(res.text)
 
     # Budget matching logic
     target_max = 999999999.0
@@ -775,7 +802,7 @@ def process_voice_intake():
             )
         )
         
-        result_json = json.loads(res.text)
+        result_json = clean_and_parse_json(res.text)
         return jsonify(result_json), 200
     except Exception as e:
         print(f"Error processing voice intake: {e}")
@@ -835,7 +862,7 @@ def analyze_venue():
             )
         )
         
-        result_json = json.loads(res.text)
+        result_json = clean_and_parse_json(res.text)
         return jsonify(result_json), 200
     except Exception as e:
         print(f"Error analyzing venue image: {e}")
