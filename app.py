@@ -798,7 +798,7 @@ def support_bot():
     try:
         # Generate model response incorporating system instruction and conversation history
         res = client.models.generate_content(
-            model='gemini-3.1-flash-lite',
+            model='gemini-2.0-flash-lite',
             contents=support_chats[session_id],
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,
@@ -806,12 +806,6 @@ def support_bot():
                 max_output_tokens=300
             )
         )
-        
-        print("--- SUPPORT BOT DEBUG ---")
-        print("Response:", res)
-        if res.candidates:
-            print("Finish Reason:", res.candidates[0].finish_reason)
-            print("Content:", res.candidates[0].content)
         
         reply_text = res.text.strip()
         
@@ -825,6 +819,27 @@ def support_bot():
     except Exception as e:
         print(f"Error in support agent: {e}")
         return jsonify({"error": f"Support agent error: {str(e)}"}), 500
+
+# ── Keep-alive thread: ping ourselves every 10 minutes so Render free tier
+#    doesn't shut us down between WhatsApp messages ──────────────────────────
+import threading
+import urllib.request
+
+def _keep_alive():
+    import time
+    own_url = os.getenv("RENDER_EXTERNAL_URL", "")
+    if not own_url:
+        return  # not running on Render, skip
+    while True:
+        time.sleep(600)  # ping every 10 minutes
+        try:
+            urllib.request.urlopen(own_url + "/", timeout=10)
+            print("🔄 Keep-alive ping sent")
+        except Exception as e:
+            print(f"⚠️  Keep-alive ping failed: {e}")
+
+_ka_thread = threading.Thread(target=_keep_alive, daemon=True)
+_ka_thread.start()
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, debug=True)
