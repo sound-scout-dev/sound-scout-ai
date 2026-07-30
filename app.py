@@ -120,7 +120,7 @@ def calculate_power_needs(audio_items_count: int, visual_items_count: int) -> di
     }
 
 # ----------------- RETRY HELPER FOR TRANSIENT API ERRORS & MULTI-MODEL FALLBACK -----------------
-FALLBACK_MODELS = ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-2.0-flash-exp', 'gemini-1.5-pro']
+FALLBACK_MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro-latest', 'gemini-2.0-flash-lite']
 
 def generate_content_with_retry(model_name, contents, config=None, max_retries=3):
     models_to_try = [model_name] + [m for m in FALLBACK_MODELS if m != model_name]
