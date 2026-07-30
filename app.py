@@ -794,28 +794,30 @@ def support_bot():
     # Keep history bounded to last 20 messages to avoid context overflow and memory bloat
     if len(support_chats[session_id]) > 20:
         support_chats[session_id] = support_chats[session_id][-20:]
-        
+
     try:
-        # Generate model response incorporating system instruction and conversation history
-        res = client.models.generate_content(
-            model='gemini-2.0-flash-lite',
-            contents=support_chats[session_id],
-            config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
-                temperature=0.7,
-                max_output_tokens=300
-            )
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=0.7,
+            max_output_tokens=300
         )
-        
+        # Use same retry helper + model as the rest of the app
+        res = generate_content_with_retry(
+            model_name='gemini-3.1-flash-lite',
+            contents=support_chats[session_id],
+            config=config
+        )
+
         reply_text = res.text.strip()
-        
+        print(f"Support bot replied to {session_id}: {reply_text[:80]}...")
+
         # Append assistant reply to the history
         support_chats[session_id].append(
             types.Content(role="model", parts=[types.Part.from_text(text=reply_text)])
         )
-        
+
         return jsonify({"reply": reply_text}), 200
-        
+
     except Exception as e:
         print(f"Error in support agent: {e}")
         return jsonify({"error": f"Support agent error: {str(e)}"}), 500
