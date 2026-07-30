@@ -138,6 +138,51 @@ def calculate_power_needs(audio_items_count: int, visual_items_count: int) -> di
 # Optimized for minimum token cost ($0.0375 - $0.075 per million tokens)
 FALLBACK_MODELS = ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b', 'gemini-2.0-flash']
 
+# ----------------- GROQ FREE-TIER FALLBACK PROVIDER -----------------
+class DummyResponse:
+    def __init__(self, text):
+        self.text = text
+
+def call_groq_api(contents):
+    groq_key = os.getenv("GROQ_API_KEY")
+    if not groq_key:
+        return None
+    try:
+        import requests
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        
+        prompt_text = ""
+        if isinstance(contents, str):
+            prompt_text = contents
+        elif isinstance(contents, list):
+            for item in contents:
+                if isinstance(item, str):
+                    prompt_text += item + "\n"
+                elif hasattr(item, 'text'):
+                    prompt_text += getattr(item, 'text', '') + "\n"
+        
+        headers = {
+            "Authorization": f"Bearer {groq_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": "llama-3.3-70b-versatile",
+            "messages": [{"role": "user", "content": prompt_text}],
+            "temperature": 0.7
+        }
+        resp = requests.post(url, headers=headers, json=payload, timeout=20)
+        if resp.status_code == 200:
+            data = resp.json()
+            reply = data["choices"][0]["message"]["content"]
+            print("⚡ Successfully processed request via Groq AI Fallback!")
+            return DummyResponse(reply)
+        else:
+            print(f"⚠️ Groq API Error ({resp.status_code}): {resp.text}")
+            return None
+    except Exception as e:
+        print(f"⚠️ Groq Fallback Exception: {e}")
+        return None
+
 def generate_content_with_retry(model_name, contents, config=None, max_retries=3):
     models_to_try = [model_name] + [m for m in FALLBACK_MODELS if m != model_name]
     last_exception = None
@@ -170,6 +215,13 @@ def generate_content_with_retry(model_name, contents, config=None, max_retries=3
                     delay *= 2
                 else:
                     break
+
+    # If all Gemini models fail or return limit:0 quota errors, attempt Groq fallback
+    if os.getenv("GROQ_API_KEY"):
+        print("🔄 All Gemini models failed due to free-tier quota limits. Falling back to Groq API...")
+        groq_res = call_groq_api(contents)
+        if groq_res:
+            return groq_res
 
     if last_exception:
         raise last_exception
