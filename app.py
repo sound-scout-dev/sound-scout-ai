@@ -25,15 +25,30 @@ load_dotenv()
 
 app = Flask(__name__)
 
-# Configure Gemini Client using the modern google-genai library
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-client = None
-if GEMINI_API_KEY:
+# Configure Gemini Client pool (supports multiple comma-separated keys for automatic failover)
+raw_keys = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
+current_key_idx = 0
+
+def get_genai_client():
+    global current_key_idx
+    if not GEMINI_API_KEYS:
+        return None
+    key = GEMINI_API_KEYS[current_key_idx % len(GEMINI_API_KEYS)]
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        return genai.Client(api_key=key)
     except Exception as e:
-        print(f"Error initializing GenAI Client: {e}")
-else:
+        print(f"Error initializing GenAI Client for key index #{current_key_idx}: {e}")
+        return None
+
+def rotate_genai_key():
+    global current_key_idx
+    if len(GEMINI_API_KEYS) > 1:
+        current_key_idx = (current_key_idx + 1) % len(GEMINI_API_KEYS)
+        print(f"🔄 Rotated to Gemini API key index #{current_key_idx}")
+
+client = get_genai_client()
+if not GEMINI_API_KEYS:
     print("⚠️ Warning: GEMINI_API_KEY is not set in environment variables.")
 
 # ----------------- SCIKIT-LEARN PRICING MODEL -----------------
@@ -130,10 +145,14 @@ def generate_content_with_retry(model_name, contents, config=None, max_retries=3
         delay = 1.5
         for attempt in range(max_retries):
             try:
+                active_client = get_genai_client()
+                if not active_client:
+                    raise Exception("No active GEMINI_API_KEY available.")
+                    
                 if config:
-                    return client.models.generate_content(model=target_model, contents=contents, config=config)
+                    return active_client.models.generate_content(model=target_model, contents=contents, config=config)
                 else:
-                    return client.models.generate_content(model=target_model, contents=contents)
+                    return active_client.models.generate_content(model=target_model, contents=contents)
             except Exception as e:
                 err_str = str(e).upper()
                 last_exception = e
@@ -141,8 +160,9 @@ def generate_content_with_retry(model_name, contents, config=None, max_retries=3
                 is_transient = "503" in err_str or "UNAVAILABLE" in err_str
                 
                 if is_quota:
-                    print(f"⚠️ Model '{target_model}' quota exhausted ({e}). Trying fallback model...")
-                    break  # Try next model in fallback list immediately
+                    print(f"⚠️ Model '{target_model}' quota exhausted ({e}). Rotating key & trying fallback model...")
+                    rotate_genai_key()
+                    break  # Try next model & key combination immediately
                 elif is_transient and attempt < max_retries - 1:
                     print(f"⚠️ Transient error on '{target_model}'. Retrying in {delay}s...")
                     time.sleep(delay)
@@ -153,7 +173,7 @@ def generate_content_with_retry(model_name, contents, config=None, max_retries=3
     if last_exception:
         raise last_exception
     else:
-        raise Exception("All Gemini fallback models failed.")
+        raise Exception("All Gemini fallback models and key rotation attempts failed.")
 
 def resolve_district_with_ai(location):
     if not location or location.strip() == '':
