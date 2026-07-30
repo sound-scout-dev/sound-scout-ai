@@ -119,26 +119,41 @@ def calculate_power_needs(audio_items_count: int, visual_items_count: int) -> di
         "suggested_generator": suggested_generator
     }
 
-# ----------------- RETRY HELPER FOR TRANSIENT API ERRORS -----------------
-def generate_content_with_retry(model_name, contents, config=None, max_retries=6):
-    delay = 2.0
-    for attempt in range(max_retries):
-        try:
-            if config:
-                return client.models.generate_content(model=model_name, contents=contents, config=config)
-            else:
-                return client.models.generate_content(model=model_name, contents=contents)
-        except Exception as e:
-            err_str = str(e).upper()
-            is_transient = "503" in err_str or "429" in err_str or "UNAVAILABLE" in err_str or "EXHAUSTED" in err_str
-            
-            if is_transient and attempt < max_retries - 1:
-                sleep_time = 5.5 if "429" in err_str or "EXHAUSTED" in err_str else delay
-                print(f"⚠️ Gemini API returned transient error ({e}). Retrying in {sleep_time}s... (Attempt {attempt+1}/{max_retries})")
-                time.sleep(sleep_time)
-                delay *= 2
-            else:
-                raise e
+# ----------------- RETRY HELPER FOR TRANSIENT API ERRORS & MULTI-MODEL FALLBACK -----------------
+FALLBACK_MODELS = ['gemini-1.5-flash', 'gemini-1.5-flash-8b', 'gemini-2.0-flash-exp', 'gemini-1.5-pro']
+
+def generate_content_with_retry(model_name, contents, config=None, max_retries=3):
+    models_to_try = [model_name] + [m for m in FALLBACK_MODELS if m != model_name]
+    last_exception = None
+
+    for target_model in models_to_try:
+        delay = 1.5
+        for attempt in range(max_retries):
+            try:
+                if config:
+                    return client.models.generate_content(model=target_model, contents=contents, config=config)
+                else:
+                    return client.models.generate_content(model=target_model, contents=contents)
+            except Exception as e:
+                err_str = str(e).upper()
+                last_exception = e
+                is_quota = "429" in err_str or "EXHAUSTED" in err_str or "RESOURCE_EXHAUSTED" in err_str
+                is_transient = "503" in err_str or "UNAVAILABLE" in err_str
+                
+                if is_quota:
+                    print(f"⚠️ Model '{target_model}' quota exhausted ({e}). Trying fallback model...")
+                    break  # Try next model in fallback list immediately
+                elif is_transient and attempt < max_retries - 1:
+                    print(f"⚠️ Transient error on '{target_model}'. Retrying in {delay}s...")
+                    time.sleep(delay)
+                    delay *= 2
+                else:
+                    break
+
+    if last_exception:
+        raise last_exception
+    else:
+        raise Exception("All Gemini fallback models failed.")
 
 def resolve_district_with_ai(location):
     if not location or location.strip() == '':
