@@ -50,6 +50,10 @@ def rotate_genai_key():
 client = get_genai_client()
 if not GEMINI_API_KEYS:
     print("⚠️ Warning: GEMINI_API_KEY is not set in environment variables.")
+else:
+    previews = [k[:8] + "..." for k in GEMINI_API_KEYS]
+    print(f"🔑 Loaded {len(GEMINI_API_KEYS)} Gemini API key(s): {previews}")
+    print(f"🔑 GROQ_API_KEY set: {'YES ✅' if os.getenv('GROQ_API_KEY') else 'NO ❌'}")
 
 # ----------------- SCIKIT-LEARN PRICING MODEL -----------------
 def generate_sri_lankan_synthetic_data(num_samples=250):
