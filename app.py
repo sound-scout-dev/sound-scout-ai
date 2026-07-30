@@ -181,7 +181,7 @@ def resolve_district_with_ai(location):
     """
     try:
         res = generate_content_with_retry(
-            model_name='gemini-3.1-flash-lite',
+            model_name='gemini-1.5-flash',
             contents=prompt
         )
         district = res.text.strip().replace("*", "").replace('"', '').replace("'", "")
@@ -271,7 +271,7 @@ def audio_node(state: GraphState) -> dict:
     Provide a concise, professional list and explanation of the audio choices.
     """
     res = generate_content_with_retry(
-        model_name='gemini-3.1-flash-lite',
+        model_name='gemini-1.5-flash',
         contents=prompt
     )
     return {"audio_recommendation": res.text}
@@ -322,7 +322,7 @@ def visual_node(state: GraphState) -> dict:
     Provide a concise, professional list.
     """
     res = generate_content_with_retry(
-        model_name='gemini-3.1-flash-lite',
+        model_name='gemini-1.5-flash',
         contents=prompt
     )
     return {"visual_recommendation": res.text}
@@ -362,7 +362,7 @@ def logistics_node(state: GraphState) -> dict:
     Formulate a staging, cabling, and power distribution plan. For outdoor events, emphasize weather protection (tents, cable ramps) and robust generators.
     """
     res = generate_content_with_retry(
-        model_name='gemini-3.1-flash-lite',
+        model_name='gemini-1.5-flash',
         contents=prompt
     )
     return {
@@ -411,7 +411,7 @@ def coordinator_node(state: GraphState) -> dict:
     8. Output the result STRICTLY as a JSON object with four keys: "budget_plan", "premium_plan", "feasibility_warning", and "price_cutting_tips". Do not output markdown, notes, or extra text.
     """
     res = generate_content_with_retry(
-        model_name='gemini-3.1-flash-lite',
+        model_name='gemini-1.5-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json"
@@ -606,7 +606,7 @@ def estimate_distance():
     Do not output any markdown, explanations, or units. Just a single float or integer.
     """
     try:
-        res = generate_content_with_retry('gemini-3.1-flash-lite', prompt)
+        res = generate_content_with_retry('gemini-1.5-flash', prompt)
         dist_str = res.text.strip().replace("km", "").replace("*", "").replace('"', '').replace("'", "")
         dist = float(dist_str)
         return jsonify({"distance_km": dist}), 200
@@ -678,9 +678,9 @@ def process_voice_intake():
             prompt
         ]
         
-        # Using gemini-3.1-flash-lite for maximum audio comprehension and accuracy
+        # Using gemini-1.5-flash for maximum audio comprehension and accuracy
         res = generate_content_with_retry(
-            model_name='gemini-3.1-flash-lite',
+            model_name='gemini-1.5-flash',
             contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -740,7 +740,7 @@ def analyze_venue():
         ]
         
         res = generate_content_with_retry(
-            model_name='gemini-3.1-flash-lite',
+            model_name='gemini-1.5-flash',
             contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
