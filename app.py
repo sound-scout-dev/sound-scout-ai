@@ -801,9 +801,9 @@ def support_bot():
             temperature=0.7,
             max_output_tokens=300
         )
-        # Use same retry helper + model as the rest of the app
+        # Use gemini-1.5-flash — separate quota pool from gemini-2.0-flash-lite
         res = generate_content_with_retry(
-            model_name='gemini-3.1-flash-lite',
+            model_name='gemini-1.5-flash',
             contents=support_chats[session_id],
             config=config
         )
