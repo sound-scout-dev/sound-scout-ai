@@ -134,8 +134,9 @@ def calculate_power_needs(audio_items_count: int, visual_items_count: int) -> di
         "suggested_generator": suggested_generator
     }
 
-# ----------------- RETRY HELPER FOR TRANSIENT API ERRORS & MULTI-MODEL FALLBACK -----------------
-FALLBACK_MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash-latest', 'gemini-1.5-pro-latest', 'gemini-2.0-flash-lite']
+# ----------------- RETRY HELPER FOR TRANSIENT API ERRORS & ULTRA-LOW COST MODEL FALLBACK -----------------
+# Optimized for minimum token cost ($0.0375 - $0.075 per million tokens)
+FALLBACK_MODELS = ['gemini-2.0-flash-lite', 'gemini-1.5-flash-8b', 'gemini-2.0-flash']
 
 def generate_content_with_retry(model_name, contents, config=None, max_retries=3):
     models_to_try = [model_name] + [m for m in FALLBACK_MODELS if m != model_name]
@@ -216,7 +217,7 @@ def resolve_district_with_ai(location):
     """
     try:
         res = generate_content_with_retry(
-            model_name='gemini-1.5-flash',
+            model_name='gemini-2.0-flash-lite',
             contents=prompt
         )
         district = res.text.strip().replace("*", "").replace('"', '').replace("'", "")
@@ -306,7 +307,7 @@ def audio_node(state: GraphState) -> dict:
     Provide a concise, professional list and explanation of the audio choices.
     """
     res = generate_content_with_retry(
-        model_name='gemini-1.5-flash',
+        model_name='gemini-2.0-flash-lite',
         contents=prompt
     )
     return {"audio_recommendation": res.text}
@@ -357,7 +358,7 @@ def visual_node(state: GraphState) -> dict:
     Provide a concise, professional list.
     """
     res = generate_content_with_retry(
-        model_name='gemini-1.5-flash',
+        model_name='gemini-2.0-flash-lite',
         contents=prompt
     )
     return {"visual_recommendation": res.text}
@@ -397,7 +398,7 @@ def logistics_node(state: GraphState) -> dict:
     Formulate a staging, cabling, and power distribution plan. For outdoor events, emphasize weather protection (tents, cable ramps) and robust generators.
     """
     res = generate_content_with_retry(
-        model_name='gemini-1.5-flash',
+        model_name='gemini-2.0-flash-lite',
         contents=prompt
     )
     return {
@@ -446,7 +447,7 @@ def coordinator_node(state: GraphState) -> dict:
     8. Output the result STRICTLY as a JSON object with four keys: "budget_plan", "premium_plan", "feasibility_warning", and "price_cutting_tips". Do not output markdown, notes, or extra text.
     """
     res = generate_content_with_retry(
-        model_name='gemini-1.5-flash',
+        model_name='gemini-2.0-flash-lite',
         contents=prompt,
         config=types.GenerateContentConfig(
             response_mime_type="application/json"
@@ -641,7 +642,7 @@ def estimate_distance():
     Do not output any markdown, explanations, or units. Just a single float or integer.
     """
     try:
-        res = generate_content_with_retry('gemini-1.5-flash', prompt)
+        res = generate_content_with_retry('gemini-2.0-flash-lite', prompt)
         dist_str = res.text.strip().replace("km", "").replace("*", "").replace('"', '').replace("'", "")
         dist = float(dist_str)
         return jsonify({"distance_km": dist}), 200
@@ -713,9 +714,9 @@ def process_voice_intake():
             prompt
         ]
         
-        # Using gemini-1.5-flash for maximum audio comprehension and accuracy
+        # Using gemini-2.0-flash-lite for lightweight audio comprehension
         res = generate_content_with_retry(
-            model_name='gemini-1.5-flash',
+            model_name='gemini-2.0-flash-lite',
             contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -775,7 +776,7 @@ def analyze_venue():
         ]
         
         res = generate_content_with_retry(
-            model_name='gemini-1.5-flash',
+            model_name='gemini-2.0-flash-lite',
             contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json"
@@ -836,9 +837,9 @@ def support_bot():
             temperature=0.7,
             max_output_tokens=300
         )
-        # Use gemini-1.5-flash — separate quota pool from gemini-2.0-flash-lite
+        # Use gemini-2.0-flash-lite — lightweight ultra-low cost model
         res = generate_content_with_retry(
-            model_name='gemini-1.5-flash',
+            model_name='gemini-2.0-flash-lite',
             contents=support_chats[session_id],
             config=config
         )
