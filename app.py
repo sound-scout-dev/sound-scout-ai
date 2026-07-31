@@ -247,14 +247,16 @@ def generate_content_with_retry(model_name, contents, config=None, max_retries=3
                 else:
                     break
 
-    # If all Gemini models fail or return limit:0 quota errors, attempt Groq fallback
-    if os.getenv("GROQ_API_KEY"):
-        print("🔄 All Gemini models failed due to free-tier quota limits. Falling back to Groq API...")
-        groq_res = call_groq_api(contents)
-        if groq_res:
-            return groq_res
+    # Disable Groq fallback for debugging as requested
+    # if os.getenv("GROQ_API_KEY"):
+    #     print("🔄 All Gemini models failed due to free-tier quota limits. Falling back to Groq API...")
+    #     groq_res = call_groq_api(contents)
+    #     if groq_res:
+    #         return groq_res
 
     if last_exception:
+        import sys
+        print(f"🚨 REAL GEMINI ERROR: {last_exception.message if hasattr(last_exception, 'message') else str(last_exception)}", file=sys.stderr)
         raise last_exception
     else:
         raise Exception("All Gemini fallback models and key rotation attempts failed.")
