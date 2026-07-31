@@ -161,7 +161,7 @@ def clean_and_parse_json(text_str):
 
 # ----------------- RETRY HELPER FOR TRANSIENT API ERRORS & ULTRA-LOW COST MODEL FALLBACK -----------------
 # Optimized for minimum token cost ($0.0375 - $0.075 per million tokens)
-FALLBACK_MODELS = ['gemini-2.5-flash', 'gemini-1.5-flash-8b']
+FALLBACK_MODELS = ['gemini-2.5-flash']
 
 # ----------------- GROQ FREE-TIER FALLBACK PROVIDER -----------------
 class DummyResponse:
