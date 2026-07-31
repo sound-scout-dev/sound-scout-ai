@@ -267,6 +267,19 @@ def resolve_district_with_ai(location):
     
     prompt = f"""
     You are a Sri Lankan Location Expert.
+SRI_LANKA_DISTRICTS = {
+    "Colombo", "Gampaha", "Kalutara", "Kandy", "Matale", "Nuwara Eliya",
+    "Galle", "Matara", "Hambantota", "Jaffna", "Kilinochchi", "Mannar",
+    "Vavuniya", "Mullaitivu", "Batticaloa", "Ampara", "Trincomalee",
+    "Kurunegala", "Puttalam", "Anuradhapura", "Polonnaruwa", "Badulla",
+    "Moneragala", "Ratnapura", "Kegalle"
+}
+
+def resolve_district_with_ai(location: str) -> str:
+    if not location or not location.trim() if hasattr(location, 'trim') else not str(location).strip():
+        return "Unknown"
+
+    prompt = f"""
     Identify the exact Sri Lankan district that the following venue/place belongs to:
     Venue: "{location}"
     
@@ -297,19 +310,24 @@ def resolve_district_with_ai(location):
     - Ratnapura
     - Kegalle
     
-    If the venue is ambiguous or not in Sri Lanka, suggest the most likely district or "Colombo".
-    Do not output any markdown, explanations, or extra text. Output exactly one word (the district name).
+    If the venue cannot be specifically identified as a specific district in Sri Lanka, respond with "Unknown".
+    Do not output any markdown, explanations, or extra text. Output exactly one word.
     """
     try:
         res = generate_content_with_retry(
             model_name='gemini-3.6-flash',
             contents=prompt
         )
-        district = res.text.strip().replace("*", "").replace('"', '').replace("'", "")
-        return district
+        cleaned = res.text.strip().replace("*", "").replace('"', '').replace("'", "")
+        words = cleaned.split()
+        if words:
+            candidate = words[0].strip(",.")
+            if candidate in SRI_LANKA_DISTRICTS:
+                return candidate
+        return "Unknown"
     except Exception as e:
         print(f"AI District Resolution Failed: {e}")
-        return "Colombo"
+        return "Unknown"
 
 # ----------------- LANGGRAPH ARCHITECTURE -----------------
 
