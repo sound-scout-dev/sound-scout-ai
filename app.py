@@ -920,7 +920,7 @@ def support_bot():
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=0.7,
-            max_output_tokens=300
+            max_output_tokens=8192
         )
         # Use gemini-3.6-flash model
         res = generate_content_with_retry(
