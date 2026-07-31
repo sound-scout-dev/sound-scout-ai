@@ -261,12 +261,6 @@ def generate_content_with_retry(model_name, contents, config=None, max_retries=3
     else:
         raise Exception("All Gemini fallback models and key rotation attempts failed.")
 
-def resolve_district_with_ai(location):
-    if not location or location.strip() == '':
-        return "Colombo"
-    
-    prompt = f"""
-    You are a Sri Lankan Location Expert.
 SRI_LANKA_DISTRICTS = {
     "Colombo", "Gampaha", "Kalutara", "Kandy", "Matale", "Nuwara Eliya",
     "Galle", "Matara", "Hambantota", "Jaffna", "Kilinochchi", "Mannar",
@@ -275,8 +269,8 @@ SRI_LANKA_DISTRICTS = {
     "Moneragala", "Ratnapura", "Kegalle"
 }
 
-def resolve_district_with_ai(location: str) -> str:
-    if not location or not location.trim() if hasattr(location, 'trim') else not str(location).strip():
+def resolve_district_with_ai(location):
+    if not location or not str(location).strip():
         return "Unknown"
 
     prompt = f"""
@@ -386,7 +380,7 @@ def audio_node(state: GraphState) -> dict:
         photo_analysis_prompt = f"""
     - Venue Spatial/Acoustic Analysis (from Uploaded Image):
       * Reflective Surfaces (concrete/glass echo): {analysis.get('reflective_surfaces', False)}
-      * Low Ceiling (<4m): {analysis.get('low_ceiling', False)}
+      * Low Ceiling (Under 4 meters): {analysis.get('low_ceiling', False)}
       * Outdoor Audio Dissipation: {analysis.get('outdoor_dissipation', False)}
       * Visual Insights & Warnings: {insights_str}
         """
@@ -437,7 +431,7 @@ def visual_node(state: GraphState) -> dict:
         photo_analysis_prompt = f"""
     - Venue Spatial/Ambient Light Analysis (from Uploaded Image):
       * High Ambient Light (washes out projectors): {analysis.get('high_ambient_light', False)}
-      * Low Ceiling (<4m limits tall rigging): {analysis.get('low_ceiling', False)}
+      * Low Ceiling (Under 4 meters limits tall rigging): {analysis.get('low_ceiling', False)}
       * Visual Insights & Warnings: {insights_str}
         """
 
@@ -545,7 +539,7 @@ def coordinator_node(state: GraphState) -> dict:
        - You MUST ONLY generate a feasibility warning if the budget plan's high limit (LKR {predicted_cost * 1.2:,.0f}) exceeds the User's Target Budget Max limit.
        - If it does exceed, set "feasibility_warning" to a helpful warning explaining why the budget is too low for this scope. In "price_cutting_tips", suggest items they can remove/compromise on to achieve the MVP (e.g., "Utilize standard active PA speakers instead of passive line-arrays").
        - If it does NOT exceed, set "feasibility_warning" to null. However, if the user's budget max is significantly higher than the premium plan's high limit (representing a highly surplus/over-sufficient budget), you can use "price_cutting_tips" to suggest premium upgrades or redundant gear they could drop (e.g., 'You have surplus budget. Suggest adding side delay speaker stacks for improved coverage' or 'Suggest upgrading standard monitors to professional in-ear monitors').
-    6. For any high-end, luxury, or non-essential equipment items, append `(Optional: <Brief explanation comment why this is not compulsory for a basic setup>)` directly to the equipment item string.
+    6. For any high-end, luxury, or non-essential equipment items, append `(Optional: Brief explanation comment why this is not compulsory for a basic setup)` directly to the equipment item string.
     7. If a category is not in the User's Requested Categories, do NOT include any equipment for that category.
     8. Output the result STRICTLY as a JSON object with four keys: "budget_plan", "premium_plan", "feasibility_warning", and "price_cutting_tips". Do not output markdown, notes, or extra text.
     """
