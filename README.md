@@ -4,7 +4,7 @@ The dedicated AI proxy and multi-agent intelligence microservice. It handles com
 
 ## 🛠️ Tech Stack
 * **Runtime:** Python 3.11 / FastAPI 
-* **AI Models:** DeepSeek-R1 / OpenAI / Gemini / OpenRouter API Proxy
+* **AI Models:** Gemini 
 * **HTTP Engine:** Uvicorn / requests
 * **Data Validation:** Pydantic / JSON Schema validation
 
