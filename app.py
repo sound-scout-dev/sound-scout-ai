@@ -1,5 +1,6 @@
 # ai/app.py
 import os
+import re
 import sys
 import json
 import time
@@ -24,6 +25,20 @@ from langgraph.graph import StateGraph, START, END
 load_dotenv()
 
 app = Flask(__name__)
+
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
+
+@app.route('/api/<path:_path>', methods=['OPTIONS'])
+def cors_preflight(_path):
+    return ('', 204)
+
 
 # Configure Gemini Client pool (supports multiple comma-separated keys for automatic failover)
 raw_keys = os.getenv("GEMINI_API_KEY", "")
@@ -158,6 +173,27 @@ def clean_and_parse_json(text_str):
         json_substring = raw[first_brace:last_brace + 1]
         return json.loads(json_substring)
     return json.loads(raw)
+
+
+def _plans_too_similar(budget_items, premium_items):
+    """Detect when the model returned near-duplicate budget/premium equipment lists."""
+    def normalize(items):
+        out = set()
+        for item in items:
+            s = str(item).lower()
+            s = re.sub(r'^\d+x\s+', '', s)
+            s = re.sub(r'\(optional.*?\)', '', s)
+            out.add(s.strip())
+        return out
+
+    b = normalize(budget_items)
+    p = normalize(premium_items)
+    if not b or not p:
+        return False
+    if b == p:
+        return True
+    overlap = len(b & p) / max(len(b | p), 1)
+    return overlap > 0.8
 
 # ----------------- RETRY HELPER FOR TRANSIENT API ERRORS & ULTRA-LOW COST MODEL FALLBACK -----------------
 # Optimized for minimum token cost ($0.0375 - $0.075 per million tokens)
@@ -533,6 +569,8 @@ def coordinator_node(state: GraphState) -> dict:
     1. Consolidate these plans into TWO distinct equipment lists: a "budget_plan" and a "premium_plan".
     2. Adjust quantities and models so the "budget_plan" option stays as close to the Target Budget and ML Base Cost as possible. If the budget is extremely tight, scale down only the "budget_plan" to standard models.
     3. The "premium_plan" option MUST ALWAYS feature high-end, premium gear (such as Line Arrays, professional moving heads, large generators) and larger quantities, REGARDLESS of how tight the user's budget is. Do NOT scale down the "premium_plan" to fit the low budget; it should remain a high-quality showcase option for better performance.
+       - The "premium_plan" and "budget_plan" MUST NOT be the same list. At minimum: (a) every item's brand/model name must differ between the two plans (e.g. budget "JBL PRX 815W active speaker" vs premium "JBL VTX A12 line array"), (b) premium quantities for the same category must be noticeably higher (roughly 25-50% more units where it makes sense, e.g. more moving heads, more line array elements, a bigger generator kVA rating), and (c) the premium plan should include at least one or two extra equipment items the budget plan omits entirely (e.g. haze machine, extra delay speaker stacks, redundant power/backup generator).
+       - Before finalizing, double-check that "budget_plan" and "premium_plan" are visibly different lists. If they would come out identical or near-identical, revise the premium_plan to be a genuine upgrade rather than a copy.
     4. You MUST heavily customize the equipment models and brands based on the "User's Custom Event Description".
     5. Compare the User's Target Budget Max (from Target Budget LKR {state['budget_range']}) to the estimated cost of the budget plan.
        - Note that the budget plan's estimated price range is calculated and shown to the user as LKR {predicted_cost * 0.8:,.0f} to LKR {predicted_cost * 1.2:,.0f}.
@@ -551,6 +589,42 @@ def coordinator_node(state: GraphState) -> dict:
         )
     )
     result = clean_and_parse_json(res.text)
+
+    # Self-check: the model sometimes returns near-identical budget/premium lists
+    # despite instructions. If so, ask it to specifically revise the premium plan
+    # into a genuine upgrade rather than re-running the whole pipeline.
+    budget_items = result.get("budget_plan", []) or []
+    premium_items = result.get("premium_plan", []) or []
+    if _plans_too_similar(budget_items, premium_items):
+        print("⚠️ Budget and premium plans came back too similar. Requesting a differentiated premium plan...")
+        revise_prompt = f"""
+        You are the Lead Coordinator Agent (AV Technical Director) for SoundScout AI.
+
+        Here is a "budget_plan" equipment list already finalized for this event:
+        {json.dumps(budget_items)}
+
+        This is for a {state['environment']} event at {state['location']} with requirements: {state['requirements']}.
+        User's Custom Event Description: {state['description']}
+
+        Generate a "premium_plan" that is a genuine, visibly distinct upgrade over the budget_plan above:
+        - Use different, higher-end brand/model names for the same equipment categories (e.g. line arrays instead of standard PA speakers, professional moving heads instead of basic pars).
+        - Increase quantities roughly 25-50% where it makes sense for better coverage/redundancy.
+        - Add at least one or two extra items the budget_plan doesn't have (e.g. haze machine, delay speaker stacks, backup generator).
+        - Do NOT simply copy the budget_plan.
+
+        Output STRICTLY a JSON object with a single key "premium_plan" containing the equipment list array. No markdown, no extra text.
+        """
+        try:
+            revise_res = generate_content_with_retry(
+                model_name='gemini-3.6-flash',
+                contents=revise_prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json")
+            )
+            revised = clean_and_parse_json(revise_res.text)
+            if revised.get("premium_plan"):
+                result["premium_plan"] = revised["premium_plan"]
+        except Exception as e:
+            print(f"⚠️ Premium plan revision failed, keeping original: {e}")
 
     # Budget matching logic
     target_max = 999999999.0
@@ -748,6 +822,7 @@ def estimate_distance():
         return jsonify({"distance_km": 25.0}), 200
 
 @app.route('/api/voice-intake', methods=['POST'])
+@app.route('/api/ai-voice', methods=['POST'])
 def process_voice_intake():
     global client
     if 'audio' not in request.files:
@@ -827,6 +902,7 @@ def process_voice_intake():
         return jsonify({"error": f"Failed to analyze voice note: {str(e)}"}), 500
 
 @app.route('/api/venue-analysis', methods=['POST'])
+@app.route('/api/ai-image', methods=['POST'])
 def analyze_venue():
     global client
     if 'image' not in request.files:
