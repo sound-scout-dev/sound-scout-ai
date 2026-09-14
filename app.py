@@ -4,6 +4,7 @@ import re
 import sys
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 # Windows' default console codepage (cp1252) can't encode the emoji used in
 # this file's print() calls, which crashes the process before Flask starts.
@@ -394,16 +395,7 @@ class GraphState(TypedDict):
     scaling_instruction: Optional[str]
     loop_count: int
 
-# Node 1: Audio Specialist Agent
-def audio_node(state: GraphState) -> dict:
-    if "Audio" not in state["requirements"]:
-        return {"audio_recommendation": "Not requested by user."}
-    
-    venue_size = state.get("venue_size_sqm")
-    if venue_size is None or venue_size <= 0:
-        venue_size = predict_venue_size(state.get("crowd_count", 100))
-
-    print(f"🎙️ [LangGraph Node: Audio] Analyzing crowd of {state['crowd_count']} at {state['location']} (using venue size {venue_size} sqm)...")
+def _build_audio_prompt(state: GraphState, venue_size) -> str:
     scaling_prompt = ""
     if state.get("scaling_instruction"):
         scaling_prompt = f"\nCRITICAL BUDGET CONSTRAINT FOR SCALING DOWN: {state['scaling_instruction']}"
@@ -421,7 +413,7 @@ def audio_node(state: GraphState) -> dict:
       * Visual Insights & Warnings: {insights_str}
         """
 
-    prompt = f"""
+    return f"""
     You are the SoundScout Audio Specialist Agent.
     Analyze the audio requirements for this event:
     - Event Type: {state['event_type']}
@@ -432,29 +424,16 @@ def audio_node(state: GraphState) -> dict:
     - User Event Description: {state['description']}
     {photo_analysis_prompt}
     {scaling_prompt}
-    
+
     Recommend specific audio hardware (speakers, subwoofers, mixers, microphones) including exact quantities.
     Take into account whether it is Indoor or Outdoor (Outdoor requires more power and weather-proofing).
     Adjust speaker direction/quantity if Reflective Surfaces is True (e.g. recommend directional speakers or low-frequency limits to prevent concrete echo).
     Make sure to tailor the recommendations to the event description and any budget constraints.
     Provide a concise, professional list and explanation of the audio choices.
     """
-    res = generate_content_with_retry(
-        model_name='gemini-3.6-flash',
-        contents=prompt
-    )
-    return {"audio_recommendation": res.text}
 
-# Node 2: Visual Specialist Agent
-def visual_node(state: GraphState) -> dict:
-    if "Lighting" not in state["requirements"] and "Visuals" not in state["requirements"]:
-        return {"visual_recommendation": "Not requested by user."}
-    
-    venue_size = state.get("venue_size_sqm")
-    if venue_size is None or venue_size <= 0:
-        venue_size = predict_venue_size(state.get("crowd_count", 100))
 
-    print(f"💡 [LangGraph Node: Visual] Analyzing screen/light needs for venue size {venue_size} sqm...")
+def _build_visual_prompt(state: GraphState, venue_size) -> str:
     scaling_prompt = ""
     if state.get("scaling_instruction"):
         scaling_prompt = f"\nCRITICAL BUDGET CONSTRAINT FOR SCALING DOWN: {state['scaling_instruction']}"
@@ -471,7 +450,7 @@ def visual_node(state: GraphState) -> dict:
       * Visual Insights & Warnings: {insights_str}
         """
 
-    prompt = f"""
+    return f"""
     You are the SoundScout Visual and Lighting Specialist Agent.
     Analyze the lighting and display requirements for this event:
     - Event Type: {state['event_type']}
@@ -482,7 +461,7 @@ def visual_node(state: GraphState) -> dict:
     - User Event Description: {state['description']}
     {photo_analysis_prompt}
     {scaling_prompt}
-    
+
     Recommend visual displays (LED walls, projectors) and lighting equipment (LED Pars, moving heads, lasers) with exact quantities.
     Take into account whether it is Indoor or Outdoor.
     If High Ambient Light is True, heavily prefer high-nit LED walls over projectors.
@@ -490,11 +469,49 @@ def visual_node(state: GraphState) -> dict:
     Make sure to tailor the recommendations to the event description.
     Provide a concise, professional list.
     """
-    res = generate_content_with_retry(
-        model_name='gemini-3.6-flash',
-        contents=prompt
-    )
-    return {"visual_recommendation": res.text}
+
+
+# Node 1: Audio + Visual Specialist Agents, run concurrently.
+# These two never read each other's output (only Logistics does), so there's no reason to
+# pay for them as two sequential Gemini round-trips -- firing both at once roughly halves
+# that portion of total pipeline latency, which is the difference between a plan that
+# generates comfortably inside a request timeout and one that's borderline.
+def audio_visual_node(state: GraphState) -> dict:
+    needs_audio = "Audio" in state["requirements"]
+    needs_visual = "Lighting" in state["requirements"] or "Visuals" in state["requirements"]
+
+    venue_size = state.get("venue_size_sqm")
+    if venue_size is None or venue_size <= 0:
+        venue_size = predict_venue_size(state.get("crowd_count", 100))
+
+    def run_audio():
+        print(f"🎙️ [LangGraph Node: Audio] Analyzing crowd of {state['crowd_count']} at {state['location']} (using venue size {venue_size} sqm)...")
+        res = generate_content_with_retry(
+            model_name='gemini-3.6-flash',
+            contents=_build_audio_prompt(state, venue_size)
+        )
+        return res.text
+
+    def run_visual():
+        print(f"💡 [LangGraph Node: Visual] Analyzing screen/light needs for venue size {venue_size} sqm...")
+        res = generate_content_with_retry(
+            model_name='gemini-3.6-flash',
+            contents=_build_visual_prompt(state, venue_size)
+        )
+        return res.text
+
+    futures = {}
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        if needs_audio:
+            futures["audio_recommendation"] = executor.submit(run_audio)
+        if needs_visual:
+            futures["visual_recommendation"] = executor.submit(run_visual)
+        results = {key: future.result() for key, future in futures.items()}
+
+    return {
+        "audio_recommendation": results.get("audio_recommendation", "Not requested by user."),
+        "visual_recommendation": results.get("visual_recommendation", "Not requested by user."),
+    }
 
 # Node 3: Staging & Power Logistics Agent
 def logistics_node(state: GraphState) -> dict:
@@ -670,19 +687,17 @@ def coordinator_node(state: GraphState) -> dict:
 
 # Build and compile the LangGraph workflow
 workflow = StateGraph(GraphState)
-workflow.add_node("audio", audio_node)
-workflow.add_node("visual", visual_node)
+workflow.add_node("audio_visual", audio_visual_node)
 workflow.add_node("logistics", logistics_node)
 workflow.add_node("coordinator", coordinator_node)
 
-workflow.add_edge(START, "audio")
-workflow.add_edge("audio", "visual")
-workflow.add_edge("visual", "logistics")
+workflow.add_edge(START, "audio_visual")
+workflow.add_edge("audio_visual", "logistics")
 workflow.add_edge("logistics", "coordinator")
 
 def route_coordinator(state: GraphState):
     if state.get("scaling_instruction") and state.get("loop_count", 0) <= 1:
-        print("🔄 Loops detected. Routing back to Audio Node for scaling...")
+        print("🔄 Loops detected. Routing back to Audio/Visual Node for scaling...")
         return "loop_back"
     return "finish"
 
@@ -690,7 +705,7 @@ workflow.add_conditional_edges(
     "coordinator",
     route_coordinator,
     {
-        "loop_back": "audio",
+        "loop_back": "audio_visual",
         "finish": END
     }
 )
@@ -962,7 +977,27 @@ def analyze_venue():
         print(f"Error analyzing venue image: {e}")
         return jsonify({"error": f"Failed to analyze venue photo: {str(e)}"}), 500
 
+# session_id -> {"history": [...], "last_access": epoch_seconds}. Per-session history is
+# already capped at 20 messages below, but the number of DISTINCT sessions was never bounded --
+# every WhatsApp support conversation left its entry here forever, growing memory without limit
+# and eventually OOM-killing the pod. Idle sessions are now swept out after SUPPORT_CHAT_TTL_SECONDS.
 support_chats = {}
+SUPPORT_CHAT_TTL_SECONDS = 2 * 60 * 60  # 2 hours of inactivity
+_last_support_chat_sweep = 0
+_SUPPORT_CHAT_SWEEP_INTERVAL_SECONDS = 10 * 60  # don't scan the dict on every single request
+
+def _sweep_stale_support_chats():
+    global _last_support_chat_sweep
+    now = time.time()
+    if now - _last_support_chat_sweep < _SUPPORT_CHAT_SWEEP_INTERVAL_SECONDS:
+        return
+    _last_support_chat_sweep = now
+    stale = [sid for sid, entry in support_chats.items()
+             if now - entry["last_access"] > SUPPORT_CHAT_TTL_SECONDS]
+    for sid in stale:
+        del support_chats[sid]
+    if stale:
+        print(f"🧹 Swept {len(stale)} idle support chat session(s).")
 
 @app.route('/api/support', methods=['POST'])
 def support_bot():
@@ -970,39 +1005,45 @@ def support_bot():
     data = request.get_json() or {}
     session_id = data.get("session_id")
     user_message = data.get("message")
-    
+
     if not session_id or not user_message:
         return jsonify({"error": "session_id and message are required"}), 400
-        
+
     if not client:
         GEMINI_API_KEY_RETRY = os.getenv("GEMINI_API_KEY")
         if GEMINI_API_KEY_RETRY:
             client = genai.Client(api_key=GEMINI_API_KEY_RETRY)
         else:
             return jsonify({"error": "Gemini Client is not configured. Key missing."}), 500
-            
+
     system_instruction = """
     You are the SoundScout AI Support Assistant, an official WhatsApp bot helping event organizers and AV equipment vendors.
     SoundScout is a smart platform matching event organizers with audio, lighting, visuals, and staging vendors in Sri Lanka.
     Organizers can plan events using native voice notes, upload venue photos for automatic acoustic analysis, receive optimized equipment recommendations, and accept bids from vendors.
     Vendors can view open opportunities matching their categories and districts, submit bids, and register inventory.
-    
+
     Be helpful, extremely professional, concise (since this is on WhatsApp, keep responses to maximum 3-4 bullet points or short paragraphs), and friendly.
     If asked about system status, everything is fully operational.
     """
-    
-    # Initialize history list if not present
+
+    _sweep_stale_support_chats()
+
+    # Initialize history entry if not present
     if session_id not in support_chats:
-        support_chats[session_id] = []
-        
+        support_chats[session_id] = {"history": [], "last_access": time.time()}
+    entry = support_chats[session_id]
+    entry["last_access"] = time.time()
+    history = entry["history"]
+
     # Append the new user message to the session history
-    support_chats[session_id].append(
+    history.append(
         types.Content(role="user", parts=[types.Part.from_text(text=user_message)])
     )
-    
+
     # Keep history bounded to last 20 messages to avoid context overflow and memory bloat
-    if len(support_chats[session_id]) > 20:
-        support_chats[session_id] = support_chats[session_id][-20:]
+    if len(history) > 20:
+        entry["history"] = history[-20:]
+        history = entry["history"]
 
     try:
         config = types.GenerateContentConfig(
@@ -1013,7 +1054,7 @@ def support_bot():
         # Use gemini-3.6-flash model
         res = generate_content_with_retry(
             model_name='gemini-3.6-flash',
-            contents=support_chats[session_id],
+            contents=history,
             config=config
         )
 
@@ -1021,7 +1062,7 @@ def support_bot():
         print(f"Support bot replied to {session_id}: {reply_text[:80]}...")
 
         # Append assistant reply to the history
-        support_chats[session_id].append(
+        history.append(
             types.Content(role="model", parts=[types.Part.from_text(text=reply_text)])
         )
 
