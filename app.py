@@ -4,7 +4,9 @@ import re
 import sys
 import json
 import time
+import io
 from concurrent.futures import ThreadPoolExecutor
+from PIL import Image as PILImage
 
 # Windows' default console codepage (cp1252) can't encode the emoji used in
 # this file's print() calls, which crashes the process before Flask starts.
@@ -976,6 +978,127 @@ def analyze_venue():
     except Exception as e:
         print(f"Error analyzing venue image: {e}")
         return jsonify({"error": f"Failed to analyze venue photo: {str(e)}"}), 500
+
+
+@app.route('/api/analyze-venue-photo', methods=['POST'])
+def analyze_venue_photo():
+    """
+    Premium Venue Blueprint feature: scale estimation + stage placement for a
+    single drone/overhead outdoor venue photo. Consumed by
+    placement/src/placement (frontend) -- see aiService.js there for the
+    exact response shape this must produce.
+
+    Gemini is NOT asked for raw pixel coordinates. A vision model's "pixel"
+    output is notoriously unreliable -- it doesn't see the image at its
+    original resolution internally, so numbers like "x=1743px" are a guess
+    dressed up as a measurement. Instead:
+      - Gemini returns the real-world ground width (meters) it can infer from
+        reference objects (cars, doors, people), and a stage box on its
+        documented 0-1000 per-axis normalized coordinate convention.
+      - THIS SERVER measures the actual pixel dimensions via Pillow and does
+        the normalized -> pixel arithmetic, so coordinate correctness doesn't
+        depend on the model's internal notion of image size.
+    """
+    global client
+    if 'image' not in request.files:
+        return jsonify({"error": "No image file provided"}), 400
+
+    image_file = request.files['image']
+    image_bytes = image_file.read()
+    content_type = image_file.content_type or "image/jpeg"
+
+    try:
+        with PILImage.open(io.BytesIO(image_bytes)) as img:
+            width_px, height_px = img.size
+    except Exception as e:
+        return jsonify({"error": f"Could not read image: {str(e)}"}), 400
+
+    if not client:
+        GEMINI_API_KEY_RETRY = os.getenv("GEMINI_API_KEY")
+        if GEMINI_API_KEY_RETRY:
+            client = genai.Client(api_key=GEMINI_API_KEY_RETRY)
+        else:
+            return jsonify({"error": "Gemini Client is not configured. Key missing."}), 500
+
+    prompt = """
+    You are the SoundScout Venue Blueprint Agent. Analyze this overhead/drone
+    photo of an OUTDOOR event venue for two things:
+
+    1. SCALE: Find real-world reference objects visible in the photo (cars
+       ~4.5m long, standard doors ~2m tall, parking spaces ~2.5m wide, adult
+       people ~1.7m tall, standard shipping containers ~12m long). Using
+       whichever references you can identify, estimate the real-world width
+       (in meters, left edge to right edge) of the ground area actually
+       visible in this photo. Explain which reference objects you used.
+
+    2. STAGE PLACEMENT: Identify the single best rectangular area for a
+       concert stage: flat, open, ideally backed by a wall/structure/treeline
+       (for load-in and a visual backdrop), with clear open space in front of
+       it for a crowd to gather. Return this as a bounding box using this
+       EXACT convention: each of x1, y1, x2, y2 is an integer from 0 to 1000,
+       where x is normalized to the image WIDTH and y is normalized to the
+       image HEIGHT (this is a standard normalized-coordinate convention, NOT
+       pixels -- e.g. x=500 always means the horizontal center of the image,
+       regardless of its actual resolution). (x1,y1) is the top-left corner,
+       (x2,y2) is the bottom-right corner. If no suitable location is visible
+       (fully indoor, no open ground, etc.), return null for stage_box and
+       explain why in stage_reasoning.
+
+    Respond ONLY with a raw JSON object, no markdown or backticks, with
+    exactly these keys:
+    - "estimated_ground_width_m": number or null (your best estimate; null if no usable reference objects are visible)
+    - "scale_confidence": "high" | "medium" | "low"
+    - "scale_reasoning": string (which reference objects you used and why)
+    - "stage_box": {"x1": int, "y1": int, "x2": int, "y2": int} or null (0-1000 normalized as described above)
+    - "stage_reasoning": string (why this location, or why no location qualifies)
+    """
+
+    try:
+        contents = [
+            types.Part.from_bytes(data=image_bytes, mime_type=content_type),
+            prompt,
+        ]
+        res = generate_content_with_retry(
+            model_name='gemini-3.6-flash',
+            contents=contents,
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
+        )
+        result = clean_and_parse_json(res.text)
+    except Exception as e:
+        print(f"Error analyzing venue photo for blueprint: {e}")
+        return jsonify({"error": f"Failed to analyze venue photo: {str(e)}"}), 500
+
+    ground_width_m = result.get("estimated_ground_width_m")
+    meters_per_pixel = None
+    if isinstance(ground_width_m, (int, float)) and ground_width_m > 0 and width_px > 0:
+        meters_per_pixel = ground_width_m / width_px
+
+    stage_box_px = None
+    raw_box = result.get("stage_box")
+    if isinstance(raw_box, dict) and all(k in raw_box for k in ("x1", "y1", "x2", "y2")):
+        try:
+            x1 = max(0, min(1000, float(raw_box["x1"]))) / 1000 * width_px
+            x2 = max(0, min(1000, float(raw_box["x2"]))) / 1000 * width_px
+            y1 = max(0, min(1000, float(raw_box["y1"]))) / 1000 * height_px
+            y2 = max(0, min(1000, float(raw_box["y2"]))) / 1000 * height_px
+            if x2 > x1 and y2 > y1:
+                stage_box_px = {
+                    "x1": round(min(x1, x2)), "y1": round(min(y1, y2)),
+                    "x2": round(max(x1, x2)), "y2": round(max(y1, y2)),
+                }
+        except (TypeError, ValueError):
+            stage_box_px = None
+
+    return jsonify({
+        "image_width_px": width_px,
+        "image_height_px": height_px,
+        "meters_per_pixel": meters_per_pixel,
+        "scale_confidence": result.get("scale_confidence", "low"),
+        "scale_reasoning": result.get("scale_reasoning", ""),
+        "stage_box": stage_box_px,
+        "stage_reasoning": result.get("stage_reasoning", ""),
+    }), 200
+
 
 # session_id -> {"history": [...], "last_access": epoch_seconds}. Per-session history is
 # already capped at 20 messages below, but the number of DISTINCT sessions was never bounded --
