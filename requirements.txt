@@ -1,4 +1,5 @@
 Flask
+Pillow
 google-genai
 python-dotenv
 scikit-learn
