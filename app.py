@@ -559,6 +559,23 @@ def logistics_node(state: GraphState) -> dict:
         "suggested_generator": power_calc["suggested_generator"]
     }
 
+def _as_tip_list(raw) -> List[str]:
+    """The model is asked for a list of tips but intermittently returns a single
+    prose string (often numbered inline: "...: (1) do x (2) do y"). Clients render
+    these as a list, so normalise the shape here rather than at every consumer."""
+    if isinstance(raw, list):
+        return [str(t).strip() for t in raw if str(t).strip()]
+    if not isinstance(raw, str) or not raw.strip():
+        return []
+
+    parts = re.split(r"\(\d+\)\s*", raw)
+    intro = parts[0].strip().rstrip(":")
+    tips = [p.strip().rstrip(";") for p in parts[1:] if p.strip()]
+    if tips:
+        return [intro, *tips] if intro else tips
+    return [raw.strip()]
+
+
 # Node 4: Lead Coordinator Node (Budget evaluation logic)
 def coordinator_node(state: GraphState) -> dict:
     print(f"👑 [LangGraph Node: Coordinator] Consolidating and comparing limits...")
@@ -680,7 +697,7 @@ def coordinator_node(state: GraphState) -> dict:
         "budget_plan": result.get("budget_plan", []),
         "premium_plan": result.get("premium_plan", []),
         "feasibility_warning": result.get("feasibility_warning"),
-        "price_cutting_tips": result.get("price_cutting_tips", []),
+        "price_cutting_tips": _as_tip_list(result.get("price_cutting_tips")),
         "resolved_district": resolved_district,
         "ml_predicted_cost": predicted_cost,
         "scaling_instruction": scaling_instruction,
